@@ -1,0 +1,25 @@
+[Unit]
+Description=DuoYu Go backend and management
+After=network-online.target duoyu-sync.service
+Wants=network-online.target
+ConditionPathExists=!/www/server/duoyu-sync-maintenance
+
+[Service]
+Type=simple
+User=duoyu-backend
+Group=duoyu-backend
+SupplementaryGroups=duoyu-backup
+WorkingDirectory=/www/wwwroot/duoyu-backend
+EnvironmentFile=/www/server/duoyu-backend.env
+ExecStart=/www/wwwroot/duoyu-backend/duoyu-backend
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/www/data/duoyu/users
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

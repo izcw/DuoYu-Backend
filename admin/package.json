@@ -1,0 +1,26 @@
+{
+  "name": "duoyu-management",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "node scripts/build-icons.mjs && vue-tsc --noEmit && vite build",
+    "sync:id-style": "node scripts/sync-id-style.mjs"
+  },
+  "dependencies": {
+    "@iconify/vue": "^5.0.4",
+    "echarts": "^6.0.0",
+    "element-plus": "^2.11.2",
+    "vue": "^3.5.21",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "@iconify-json/ri": "^1.2.10",
+    "@types/node": "^24.0.5",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "typescript": "~5.6.3",
+    "vite": "^7.1.5",
+    "vue-tsc": "~2.1.6"
+  },
+  "packageManager": "pnpm@11.25.0"
+}

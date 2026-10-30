@@ -1,0 +1,10 @@
+node_modules/
+admin/dist/
+server/backend/duoyu-backend
+server/backend/duoyu-backend.exe
+server/backend/data/
+.env
+.env.*
+!.env.example
+work/
+Key.txt

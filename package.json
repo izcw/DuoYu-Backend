@@ -1,0 +1,12 @@
+{
+  "name":"duoyu-backend",
+  "private":true,
+  "type":"module",
+  "scripts": {
+    "build:admin":"pnpm --dir admin build",
+    "test:admin:ui":"node scripts/admin-ui.mjs",
+    "test:sync":"pnpm --dir server/sync test"
+  },
+  "devDependencies":{"@playwright/test":"^1.64.1"},
+  "packageManager":"pnpm@11.25.0"
+}
