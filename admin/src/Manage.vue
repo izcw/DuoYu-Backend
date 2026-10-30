@@ -9,6 +9,7 @@ import {
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api, size, date, session } from "./api";
 import UserAvatar from "./UserAvatar.vue";
+import FilePreview from "./FilePreview.vue";
 const route = useRoute(),
   router = useRouter();
 const section = computed(() => String(route.params.section)),
@@ -41,6 +42,48 @@ const items = ref<any[]>([]),
 const form = ref<any>({}),
   configText = ref("{}"),
   quotaMB = ref(100);
+const statusNames: Record<string, string> = {
+  published: "已发布",
+  draft: "草稿",
+  archived: "已归档",
+};
+const inheritQuota = ref(true);
+const quotaMode = computed({
+  get: () => (inheritQuota.value ? "default" : "custom"),
+  set: (value: string) => {
+    inheritQuota.value = value === "default";
+  },
+});
+const userProfile = ref<any>({});
+const previewFile = ref<any>(null);
+const previewUrl = (row: any) =>
+  "/api/admin/users/" +
+  encodeURIComponent(id.value) +
+  "/files/" +
+  encodeURIComponent(row.sha256);
+const effectiveQuota = computed(() =>
+  inheritQuota.value
+    ? Number(userProfile.value.default_quota_bytes || 104857600)
+    : Number(form.value.quota_mb || 0) * 1048576,
+);
+const storagePercent = computed(() =>
+  effectiveQuota.value > 0
+    ? Math.min(
+        100,
+        Math.round(
+          (Number(userProfile.value.storage_bytes || 0) /
+            effectiveQuota.value) *
+            100,
+        ),
+      )
+    : 0,
+);
+function quotaModeChanged() {
+  if (inheritQuota.value || !Number.isInteger(form.value.quota_mb))
+    form.value.quota_mb =
+      Number(userProfile.value.default_quota_bytes || 104857600) / 1048576;
+  dirty.value = true;
+}
 let loadSeq = 0;
 async function load() {
   const seq = ++loadSeq;
@@ -94,19 +137,20 @@ async function load() {
       form.value = { ...items.value[0] };
       configText.value = JSON.stringify(form.value.payload, null, 2);
     }
-    if (
-      section.value === "users" &&
-      id.value &&
-      tab.value === "settings" &&
-      items.value[0]
-    )
+    if (section.value === "users" && id.value && tab.value === "settings") {
+      if (!items.value[0]) throw Error("用户不存在");
+      userProfile.value = { ...items.value[0] };
+      inheritQuota.value = items.value[0].quota_bytes == null;
       form.value = {
         disabled: items.value[0].disabled,
         quota_mb:
-          items.value[0].quota_bytes == null
-            ? null
-            : Number(items.value[0].quota_bytes) / 1048576,
+          Number(
+            items.value[0].effective_quota_bytes ||
+              items.value[0].default_quota_bytes ||
+              104857600,
+          ) / 1048576,
       };
+    }
     if (section.value === "settings")
       quotaMB.value =
         Number(
@@ -131,6 +175,7 @@ watch(
   () => {
     page.value = 1;
     search.value = "";
+    previewFile.value = null;
     void load();
   },
   { immediate: true },
@@ -228,19 +273,47 @@ async function remove(row: any) {
 }
 async function userSettings(row: any) {
   await router.push("/users/" + row.id + "/settings");
-  form.value = {
-    disabled: row.disabled,
-    quota_mb:
-      row.quota_bytes == null ? null : Number(row.quota_bytes) / 1048576,
-  };
+}
+async function deleteUserFile(row: any) {
+  const force =
+    Number(row.reference_count || 0) > 0 || Number(row.conflict_count || 0) > 0;
+  try {
+    await ElMessageBox.confirm(
+      force
+        ? "这张图片仍有引用或待处理冲突。删除会移除云端正在使用它的图标/壁纸图片，并同步到用户各设备；现有备份中的副本不受影响。确认删除？"
+        : "删除这张未使用的图片并释放用户配额？",
+      "删除用户图片",
+      { type: "warning", confirmButtonText: "确认删除" },
+    );
+    await api(
+      previewUrl(row).slice("/api/admin/".length) +
+        (force ? "?force=true" : ""),
+      undefined,
+      "DELETE",
+    );
+    previewFile.value = null;
+    ElMessage.success("已删除，正在清理存储文件");
+    await load();
+  } catch (e) {
+    if (e !== "cancel" && e !== "close") ElMessage.error(String(e));
+  }
 }
 async function saveUser() {
+  if (
+    error.value ||
+    (!inheritQuota.value &&
+      (!Number.isInteger(form.value.quota_mb) ||
+        form.value.quota_mb < 0 ||
+        form.value.quota_mb > 102400))
+  ) {
+    ElMessage.error("请输入0至102400之间的整数配额");
+    return;
+  }
   busy.value = true;
   try {
     await api("users/" + id.value, {
       disabled: !!form.value.disabled,
-      quota_mb:
-        form.value.quota_mb === null ? null : Number(form.value.quota_mb),
+      quota_mb: inheritQuota.value ? null : Number(form.value.quota_mb),
     });
     dirty.value = false;
     ElMessage.success("已更新");
@@ -437,37 +510,80 @@ onUnmounted(() =>
       v-else-if="section === 'users' && id && tab === 'settings'"
       class="dy-panel"
     >
-      <h2>项目访问及配额</h2>
-      <p class="dy-muted">{{ id }}</p>
-      <el-form class="dy-form" label-position="top"
-        ><el-form-item label="暂停本项目访问"
+      <div class="user-summary">
+        <UserAvatar
+          :src="userProfile.picture"
+          :name="userProfile.name"
+          :size="48"
+        />
+        <div>
+          <h2>{{ userProfile.name || "用户访问设置" }}</h2>
+          <p class="dy-muted">{{ id }}</p>
+        </div>
+      </div>
+      <el-form class="dy-form quota-form" label-position="top" v-loading="busy">
+        <el-form-item label="项目访问"
           ><el-switch
             v-model="form.disabled"
-            @change="dirty = true" /></el-form-item
-        ><el-form-item label="个人配额（MB）"
+            active-text="暂停访问"
+            @change="dirty = true"
+        /></el-form-item>
+        <el-form-item label="配额方式"
+          ><el-radio-group v-model="quotaMode" @change="quotaModeChanged"
+            ><el-radio-button value="default">跟随默认</el-radio-button
+            ><el-radio-button value="custom"
+              >单独设置</el-radio-button
+            ></el-radio-group
+          ></el-form-item
+        >
+        <el-form-item label="个人配额（MB）"
           ><el-input-number
             v-model="form.quota_mb"
+            :key="quotaMode"
+            :disabled="inheritQuota"
             :min="0"
             :max="102400"
             :precision="0"
             @change="dirty = true"
-          /><el-button
-            @click="
-              form.quota_mb = null;
-              dirty = true;
-            "
-            >使用默认配额</el-button
-          ></el-form-item
+          /><span class="quota-hint">{{
+            inheritQuota ? "继承全局默认配额" : "此设置仅对当前用户生效"
+          }}</span></el-form-item
         >
-        <p>
-          {{
-            form.quota_mb == null ? "当前使用默认配额" : "当前使用个人配额"
-          }}；0MB 禁止新增文件，不删除原有文件。
-        </p>
-        <el-button type="primary" :loading="busy" @click="saveUser"
-          >保存</el-button
-        ></el-form
-      >
+        <div class="storage-summary">
+          <div>
+            <span>已用 {{ size(userProfile.storage_bytes) }}</span
+            ><strong>生效容量 {{ size(effectiveQuota) }}</strong>
+          </div>
+          <el-progress
+            :percentage="storagePercent"
+            :show-text="false"
+            :stroke-width="6"
+            :status="
+              Number(userProfile.storage_bytes) > effectiveQuota
+                ? 'exception'
+                : undefined
+            "
+          />
+          <p class="dy-muted">
+            {{
+              effectiveQuota === 0
+                ? "已禁止新增上传，现有文件仍然保留。"
+                : Number(userProfile.storage_bytes) > effectiveQuota
+                  ? "当前用量已超出配额，新增上传将暂停，已有文件不会删除。"
+                  : "降低配额不会删除已有文件；设置为0MB时禁止新增上传。"
+            }}
+          </p>
+        </div>
+        <div class="dy-form-footer">
+          <el-button
+            type="primary"
+            :loading="busy"
+            :disabled="!!error"
+            @click="saveUser"
+            >保存设置</el-button
+          ><el-button @click="router.push('/users')">取消</el-button>
+        </div>
+      </el-form>
     </div>
     <template v-else
       ><div v-if="section === 'backups'" class="dy-panel">
@@ -547,11 +663,21 @@ onUnmounted(() =>
               label="说明"
               min-width="200"
               show-overflow-tooltip
-            /><el-table-column
-              prop="status"
-              label="状态"
-              width="120"
-            /><el-table-column label="更新于" min-width="180"
+            /><el-table-column label="状态" width="120"
+              ><template #default="{ row }"
+                ><el-tag
+                  :type="
+                    row.status === 'published'
+                      ? 'success'
+                      : row.status === 'draft'
+                        ? 'info'
+                        : 'warning'
+                  "
+                  effect="light"
+                  >{{ statusNames[row.status] || row.status }}</el-tag
+                ></template
+              ></el-table-column
+            ><el-table-column label="更新于" min-width="180"
               ><template #default="{ row }">{{
                 date(row.updated_at)
               }}</template></el-table-column
@@ -606,9 +732,13 @@ onUnmounted(() =>
               label="修订号"
               width="100"
             /><el-table-column label="状态" width="100"
-              ><template #default="{ row }">{{
-                row.disabled ? "已暂停" : "正常"
-              }}</template></el-table-column
+              ><template #default="{ row }"
+                ><el-tag
+                  :type="row.disabled ? 'warning' : 'success'"
+                  effect="light"
+                  >{{ row.disabled ? "已暂停" : "正常" }}</el-tag
+                ></template
+              ></el-table-column
             ><el-table-column label="操作" width="310"
               ><template #default="{ row }"
                 ><el-button
@@ -663,31 +793,57 @@ onUnmounted(() =>
               }}</template></el-table-column
             ></template
           >
-          <template v-else-if="tab === 'files'"
-            ><el-table-column
+          <template v-else-if="tab === 'files'">
+            <el-table-column label="预览" width="100"
+              ><template #default="{ row }"
+                ><button
+                  class="file-thumb-button"
+                  aria-label="预览图片"
+                  @click="previewFile = row"
+                >
+                  <el-image :src="previewUrl(row)" fit="cover" lazy
+                    ><template #error
+                      ><span class="file-thumb-error">加载失败</span></template
+                    ></el-image
+                  >
+                </button></template
+              ></el-table-column
+            >
+            <el-table-column
               prop="sha256"
-              label="文件哈希"
-              min-width="300"
+              label="文件标识"
+              min-width="200"
               show-overflow-tooltip
-            /><el-table-column
-              prop="media_type"
-              label="格式"
-              width="140"
-            /><el-table-column label="大小" width="130"
+            />
+            <el-table-column prop="media_type" label="格式" width="130" />
+            <el-table-column label="大小" width="110"
               ><template #default="{ row }">{{
                 size(row.byte_size)
               }}</template></el-table-column
-            ><el-table-column label="查看" width="100"
+            >
+            <el-table-column label="上传时间" min-width="180"
+              ><template #default="{ row }">{{
+                date(row.created_at)
+              }}</template></el-table-column
+            >
+            <el-table-column label="使用状态" width="110"
               ><template #default="{ row }"
-                ><a
-                  :href="'/api/admin/users/' + id + '/files/' + row.sha256"
-                  target="_blank"
-                  rel="noopener"
-                  >预览</a
+                ><el-tag :type="row.reference_count ? 'success' : 'info'">{{
+                  row.reference_count
+                    ? "使用中 · " + row.reference_count
+                    : "未使用"
+                }}</el-tag></template
+              ></el-table-column
+            >
+            <el-table-column label="操作" width="170"
+              ><template #default="{ row }"
+                ><el-button text @click="previewFile = row">预览</el-button
+                ><el-button text type="danger" @click="deleteUserFile(row)"
+                  >删除</el-button
                 ></template
               ></el-table-column
-            ></template
-          >
+            >
+          </template>
           <template v-else-if="tab === 'sync'"
             ><el-table-column prop="revision" label="修订号" /><el-table-column
               prop="operation_id"
@@ -729,5 +885,10 @@ onUnmounted(() =>
           layout="prev,pager,next,total"
         /></div
     ></template>
+    <FilePreview
+      :file="previewFile"
+      :url="previewFile ? previewUrl(previewFile) : ''"
+      @close="previewFile = null"
+    />
   </section>
 </template>

@@ -8,3 +8,6 @@ server/backend/data/
 !.env.example
 work/
 Key.txt
+
+__pycache__/
+*.pyc

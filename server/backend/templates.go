@@ -65,6 +65,7 @@ func (s *Server) captureTemplate(w http.ResponseWriter, r *http.Request) error {
 				rows.Close()
 				return e
 			}
+			item.Payload = normalizeIconUploads(item.Payload).(map[string]any)
 			snap.Entities = append(snap.Entities, item)
 		}
 		rows.Close()
@@ -270,7 +271,7 @@ func (s *Server) applyTemplateTx(ctx context.Context, tx pgx.Tx, account, templa
 		if !initial && (entity.Table == "preferences" || entity.Table == "shortcuts" || entity.Table == "shortcutItems" || entity.Table == "wallpapers") {
 			continue
 		}
-		p := entity.Payload
+		p := normalizeIconUploads(entity.Payload).(map[string]any)
 		id := maps[entity.Table+":"+entity.ID]
 		p["id"] = id
 		switch entity.Table {
@@ -392,4 +393,29 @@ func (s *Server) applyTemplateTx(ctx context.Context, tx pgx.Tx, account, templa
 	}
 	_, e = tx.Exec(ctx, "INSERT INTO backend_template_applies(account_id,request_id,template_id,revision) VALUES($1,$2,$3,$4)", account, request, template, revision)
 	return revision, e
+}
+
+func normalizeIconUploads(v any) any {
+	switch x := v.(type) {
+	case string:
+		if len(x) > 11 && x[:11] == "duoyu-icon:" {
+			var icon map[string]any
+			if json.Unmarshal([]byte(x[11:]), &icon) == nil {
+				if icon["mode"] != "upload" {
+					icon["image"] = ""
+				}
+				b, _ := json.Marshal(icon)
+				return "duoyu-icon:" + string(b)
+			}
+		}
+	case []any:
+		for i, a := range x {
+			x[i] = normalizeIconUploads(a)
+		}
+	case map[string]any:
+		for k, a := range x {
+			x[k] = normalizeIconUploads(a)
+		}
+	}
+	return v
 }

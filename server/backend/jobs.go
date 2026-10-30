@@ -13,11 +13,20 @@ func (s *Server) jobs(ctx context.Context) {
 	// A single worker holds a PostgreSQL advisory lock, including across service restarts.
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
+	nextCleanup := time.Time{}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if time.Now().After(nextCleanup) {
+				nextCleanup = time.Now().Add(time.Minute)
+				gcCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+				if e := s.cleanupAssets(gcCtx); e != nil {
+					log.Print("asset cleanup deferred or failed")
+				}
+				cancel()
+			}
 			if e := s.runJob(ctx); e != nil {
 				log.Print("background job failed")
 			}

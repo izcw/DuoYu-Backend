@@ -103,7 +103,7 @@ func (s *Server) assetRoute(w http.ResponseWriter, r *http.Request, u Identity) 
 			if e = s.persistFile(u.ID, hash, b); e != nil {
 				return e
 			}
-			_, e = tx.Exec(r.Context(), "INSERT INTO sync_assets(account_id,sha256,media_type,body,byte_size,file_path) VALUES($1,$2,$3,NULL,$4,$5) ON CONFLICT(account_id,sha256) DO UPDATE SET body=NULL,byte_size=excluded.byte_size,file_path=excluded.file_path", u.ID, hash, media, len(b), s.relativeFile(u.ID, hash))
+			_, e = tx.Exec(r.Context(), "INSERT INTO sync_assets(account_id,sha256,media_type,body,byte_size,file_path) VALUES($1,$2,$3,NULL,$4,$5) ON CONFLICT(account_id,sha256) DO UPDATE SET body=NULL,byte_size=excluded.byte_size,file_path=excluded.file_path,last_uploaded_at=now()", u.ID, hash, media, len(b), s.relativeFile(u.ID, hash))
 			return e
 		})
 		if e != nil {

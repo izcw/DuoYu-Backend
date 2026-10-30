@@ -14,3 +14,10 @@ DO $$ DECLARE relation text; BEGIN
   END IF;
  END LOOP;
 END $$;
+GRANT SELECT,INSERT,UPDATE,DELETE ON sync_asset_deletions TO duoyu_backend;
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_policies WHERE schemaname=current_schema() AND tablename='sync_asset_deletions' AND policyname='backend_management') THEN
+ CREATE POLICY backend_management ON sync_asset_deletions TO duoyu_backend USING(true) WITH CHECK(true);
+ END IF;
+END $$;
+GRANT DELETE ON sync_assets TO duoyu_backend;

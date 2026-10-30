@@ -46,6 +46,8 @@ try {
   });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  let userQuota = null;
+  let fileDeleted = false;
   let captured = false,
     defaults = false;
   await page.route("**/api/admin/**", async (route) => {
@@ -80,7 +82,48 @@ try {
           operations: 10 + i,
         })),
       };
-    else if (p === "users")
+    else if (p.startsWith("users/") && req.method() === "DELETE") {
+      fileDeleted = true;
+      data = { ok: true };
+    } else if (p.startsWith("users/") && req.method() === "POST") {
+      userQuota = req.postDataJSON().quota_mb;
+      data = { ok: true };
+    } else if (p.startsWith("users/") && p.endsWith("/settings"))
+      data = {
+        items: [
+          {
+            name: "示例用户",
+            picture: "https://id.duoyu.link/test-avatar.png",
+            disabled: false,
+            quota_bytes: userQuota == null ? null : userQuota * 1048576,
+            default_quota_bytes: "104857600",
+            effective_quota_bytes: String((userQuota ?? 100) * 1048576),
+            storage_bytes: "1024",
+          },
+        ],
+      };
+    else if (p.startsWith("users/") && p.endsWith("/files"))
+      data = {
+        items: [
+          {
+            sha256: "a".repeat(64),
+            media_type: "image/png",
+            byte_size: 68,
+            created_at: "2026-10-30T00:00:00Z",
+            total: 1,
+          },
+        ],
+      };
+    else if (p.startsWith("users/") && p.includes("/files/")) {
+      await route.fulfill({
+        contentType: "image/png",
+        body: Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jF7sAAAAASUVORK5CYII=",
+          "base64",
+        ),
+      });
+      return;
+    } else if (p === "users")
       data = {
         items: [
           {
@@ -118,6 +161,8 @@ try {
       };
     else if (p === "settings")
       data = { items: [{ id: "storage_quota_bytes", value: 104857600 }] };
+    if (p.startsWith("users/") && p.endsWith("/files") && fileDeleted)
+      data = { items: [] };
     await route.fulfill({ json: data });
   });
   await page.route("https://id.duoyu.link/test-avatar.png", (r) =>
@@ -132,6 +177,10 @@ try {
   await page.goto(base + "/admin/");
   await page.getByRole("heading", { name: "概览", exact: true }).waitFor();
   await page.locator("canvas").waitFor();
+  assert.equal(
+    await page.locator(".dy-header-username").textContent(),
+    "管理员",
+  );
   assert.equal(
     await page.locator(".dy-header-user .user-avatar").getAttribute("src"),
     "https://id.duoyu.link/test-avatar.png",
@@ -167,6 +216,41 @@ try {
     await page.locator(".user-identity .user-avatar").getAttribute("src"),
     "https://id.duoyu.link/test-avatar.png",
   );
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  const quota = page.getByRole("spinbutton");
+  await quota.waitFor();
+  assert.equal(await quota.inputValue(), "100");
+  assert(await quota.isDisabled());
+  await page.getByText("生效容量 100.0 MB", { exact: true }).waitFor();
+  await page.screenshot({ path: "work/admin-quota.png", fullPage: true });
+  await page.getByText("单独设置", { exact: true }).click();
+  await quota.fill("0");
+  await quota.blur();
+  await page.getByRole("button", { name: "保存设置", exact: true }).click();
+  await page.getByRole("button", { name: "设置", exact: true }).waitFor();
+  assert.equal(userQuota, 0);
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await quota.waitFor();
+  assert.equal(await quota.inputValue(), "0");
+  await page.getByText("跟随默认", { exact: true }).click();
+  assert.equal(await quota.inputValue(), "100");
+  await page.getByRole("button", { name: "保存设置", exact: true }).click();
+  await page.getByRole("button", { name: "文件", exact: true }).waitFor();
+  assert.equal(userQuota, null);
+  await page.getByRole("button", { name: "文件", exact: true }).click();
+  await page.getByRole("button", { name: "预览图片", exact: true }).click();
+  const preview = page.getByRole("dialog", { name: "文件预览", exact: true });
+  await preview.waitFor();
+  await page.waitForFunction(
+    () => document.querySelector(".file-preview-stage img")?.naturalWidth === 1,
+  );
+  await page.screenshot({
+    path: "work/admin-file-preview.png",
+    fullPage: true,
+  });
+  await preview.getByRole("button", { name: "关闭", exact: true }).click();
+  await preview.waitFor({ state: "hidden" });
+  await page.getByRole("menuitem", { name: "用户管理", exact: true }).click();
   await page.getByRole("button", { name: "设为模板", exact: true }).click();
   await page.getByLabel("名称", { exact: true }).fill("新官方模板");
   await page.getByRole("button", { name: "刷新当前页面", exact: true }).click();
@@ -191,6 +275,10 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(base + "/admin/");
   await page.locator("canvas").waitFor();
+  assert.equal(
+    await page.locator(".dy-header-username").textContent(),
+    "管理员",
+  );
   assert(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth + 1,
@@ -210,9 +298,37 @@ try {
   await page.getByRole("button", { name: "打开菜单", exact: true }).click();
   await page.getByRole("button", { name: "关闭菜单", exact: true }).click();
   await page.screenshot({ path: "work/admin-mobile.png", fullPage: true });
+  await page.getByRole("button", { name: "文件", exact: true }).click();
+  await page.getByRole("button", { name: "预览图片", exact: true }).click();
+  await page.getByRole("dialog", { name: "文件预览", exact: true }).waitFor();
+  await page.waitForTimeout(300);
+  assert(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth + 1,
+    ),
+    "mobile preview overflow",
+  );
+  await page.screenshot({
+    path: "work/admin-file-preview-mobile.png",
+    fullPage: true,
+  });
+  await page
+    .getByRole("dialog", { name: "文件预览", exact: true })
+    .getByRole("button", { name: "关闭", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "文件预览", exact: true })
+    .waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "删除", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "删除用户图片", exact: true })
+    .getByRole("button", { name: "确认删除", exact: true })
+    .click();
+  await page.getByText("暂无数据", { exact: true }).waitFor();
+  assert(fileDeleted);
   assert.deepEqual(errors, []);
   console.log(
-    "PASS desktop/mobile admin UI, charts, user snapshot template creation, official-default selection; no page errors",
+    "PASS desktop/mobile admin UI, charts, user snapshot template creation, official-default selection, inherited/custom/zero quota and authenticated image preview; no page errors",
   );
 } finally {
   await browser.close();

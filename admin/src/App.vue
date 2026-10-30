@@ -15,6 +15,9 @@ try {
   collapsed.value =
     localStorage.getItem("duoyu-admin-menu-collapsed") === "true";
 } catch {}
+const accountName = computed(
+  () => session.profile.name?.trim() || "8888888888",
+);
 const activeMenu = computed(() => "/" + (route.params.section || ""));
 const detailName = computed(() =>
   route.params.id === "new"
@@ -202,8 +205,9 @@ async function command(value: string) {
                   :src="session.profile.picture"
                   :name="session.profile.name"
                   :size="34"
-                /><span class="dy-header-username" title="8888888888"
-                  >8888888888</span
+                /><span class="dy-header-username" :title="accountName">{{
+                  accountName
+                }}</span
                 ><span class="dy-header-admin-badge">超级管理员</span></button
               ><template #dropdown
                 ><el-dropdown-menu

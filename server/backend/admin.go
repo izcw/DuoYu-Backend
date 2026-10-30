@@ -61,6 +61,12 @@ func (s *Server) adminRoute(w http.ResponseWriter, r *http.Request) error {
 	if r.Method == "POST" && path == "catalog-assets" {
 		return s.uploadCatalog(w, r)
 	}
+	if r.Method == "DELETE" && strings.HasPrefix(path, "users/") {
+		parts := strings.Split(path, "/")
+		if len(parts) == 4 && parts[2] == "files" && uuidPattern.MatchString(parts[1]) && hashPattern.MatchString(parts[3]) {
+			return s.deleteAsset(w, r, parts[1], parts[3])
+		}
+	}
 	if r.Method == "GET" {
 		switch path {
 		case "me":
@@ -89,14 +95,20 @@ func (s *Server) adminRoute(w http.ResponseWriter, r *http.Request) error {
 		case "backups":
 			entries, e := os.ReadDir(s.cfg.BackupDir)
 			if e != nil {
-				return e
+				return fail(503, "备份目录不可读取，请检查后端账号的目录访问权限")
 			}
 			items := []map[string]any{}
 			for _, entry := range entries {
-				if !entry.IsDir() && backupPattern.MatchString(entry.Name()) {
+				if entry.Type()&os.ModeSymlink == 0 && !entry.IsDir() && backupPattern.MatchString(entry.Name()) {
 					stat, e := entry.Info()
+					if os.IsNotExist(e) {
+						continue
+					}
 					if e != nil {
-						return e
+						return fail(503, "备份文件状态暂时无法读取，请重试")
+					}
+					if !stat.Mode().IsRegular() {
+						continue
 					}
 					items = append(items, map[string]any{"name": entry.Name(), "bytes": stat.Size(), "modified": stat.ModTime()})
 				}
@@ -124,17 +136,29 @@ func (s *Server) adminRoute(w http.ResponseWriter, r *http.Request) error {
 				return fail(400, "文件名无效")
 			}
 			file := filepath.Join(s.cfg.BackupDir, name)
-			stat, e := os.Stat(file)
-			if e != nil {
+			stat, e := os.Lstat(file)
+			if os.IsNotExist(e) {
 				return fail(404, "备份不存在")
+			}
+			if e != nil {
+				return fail(503, "备份文件不可读取，请检查后端账号访问权限")
 			}
 			if !stat.Mode().IsRegular() {
 				return fail(404, "备份不存在")
 			}
+			stream, e := os.Open(file)
+			if os.IsNotExist(e) {
+				return fail(404, "备份不存在")
+			}
+			if e != nil {
+				return fail(503, "备份文件不可读取，请检查后端账号访问权限")
+			}
+			defer stream.Close()
+			w.Header().Set("Cache-Control", "private, no-store")
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 			s.audit(ctx, "backup.download", name)
-			http.ServeFile(w, r, file)
+			http.ServeContent(w, r, name, stat.ModTime(), stream)
 			return nil
 		}
 		if strings.HasPrefix(path, "users/") {
@@ -143,11 +167,18 @@ func (s *Server) adminRoute(w http.ResponseWriter, r *http.Request) error {
 				return fail(400, "用户ID无效")
 			}
 			id := parts[1]
+			var exists bool
+			if e := s.db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM sync_accounts WHERE id=$1)", id).Scan(&exists); e != nil {
+				return e
+			}
+			if !exists {
+				return fail(404, "用户不存在")
+			}
 			if len(parts) == 3 && parts[2] == "settings" {
-				return s.rows(w, r, "SELECT COALESCE(u.disabled,false) AS disabled,u.quota_bytes FROM sync_accounts a LEFT JOIN backend_users u ON u.account_id=a.id WHERE a.id=$1", id)
+				return s.rows(w, r, "SELECT a.id::text,COALESCE(u.name,'') AS name,COALESCE(u.picture,'') AS picture,COALESCE(u.disabled,false) AS disabled,u.quota_bytes,COALESCE((SELECT (value#>>'{}')::bigint FROM backend_settings WHERE id='storage_quota_bytes'),104857600)::text AS default_quota_bytes,COALESCE(u.quota_bytes,(SELECT (value#>>'{}')::bigint FROM backend_settings WHERE id='storage_quota_bytes'),104857600)::text AS effective_quota_bytes,(SELECT COALESCE(sum(byte_size),0)::text FROM sync_assets WHERE account_id=a.id) AS storage_bytes FROM sync_accounts a LEFT JOIN backend_users u ON u.account_id=a.id WHERE a.id=$1", id)
 			}
 			if len(parts) == 3 && parts[2] == "files" {
-				return s.rows(w, r, "SELECT sha256,media_type,byte_size::text,created_at,count(*) OVER()::int AS total FROM sync_assets WHERE account_id=$1 ORDER BY created_at DESC LIMIT 20 OFFSET $2", id, pageOffset(r))
+				return s.rows(w, r, "WITH entity_refs AS (SELECT h,count(*)::int n FROM sync_entities e CROSS JOIN LATERAL (SELECT DISTINCT sync_asset_references(e.payload) h) refs WHERE e.account_id=$1 AND NOT e.deleted GROUP BY h),conflict_refs AS (SELECT h,count(*)::int n FROM sync_conflicts c CROSS JOIN LATERAL (SELECT DISTINCT sync_asset_references(c.detail) h) refs WHERE c.account_id=$1 AND c.resolved_at IS NULL GROUP BY h) SELECT a.sha256,a.media_type,a.byte_size::text,a.created_at,a.last_uploaded_at,a.referenced_at,COALESCE(e.n,0) AS reference_count,COALESCE(c.n,0) AS conflict_count,count(*) OVER()::int AS total FROM sync_assets a LEFT JOIN entity_refs e ON e.h=a.sha256 LEFT JOIN conflict_refs c ON c.h=a.sha256 WHERE a.account_id=$1 ORDER BY a.created_at DESC LIMIT 20 OFFSET $2", id, pageOffset(r))
 			}
 			if len(parts) == 4 && parts[2] == "files" && hashPattern.MatchString(parts[3]) {
 				s.audit(ctx, "asset.read", id+":"+parts[3])

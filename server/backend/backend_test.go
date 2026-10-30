@@ -321,7 +321,6 @@ func TestFilesQuotaIsolationAndMigration(t *testing.T) {
 	if b, e := os.ReadFile(filepath.Join(s.cfg.AssetRoot, other.ID, oldhash)); e != nil || !bytes.Equal(b, old) {
 		t.Fatal("legacy migration failed")
 	}
-	fmt.Sprint(hash)
 }
 
 func TestUserSnapshotAndOfficialDefault(t *testing.T) {
@@ -437,5 +436,80 @@ func TestUserAvatarProfile(t *testing.T) {
 	response := callAdmin(s, admin, "GET", "users", "", false)
 	if response.Code != 200 || !strings.Contains(response.Body.String(), u.Picture) || strings.Contains(response.Body.String(), "first.png") {
 		t.Fatal("User avatar profile did not refresh", response.Body.String())
+	}
+}
+func TestAdminQuotaModesAndPreview(t *testing.T) {
+	s := testServer(t)
+	ctx := context.Background()
+	u := Identity{accountID(s.cfg.Issuer, "quota-preview"), "quota-preview", "预览用户", ""}
+	if e := s.record(ctx, u); e != nil {
+		t.Fatal(e)
+	}
+	admin := loginCookie(t, s, "trusted-super", "admin")
+	ordinary := loginCookie(t, s, "ordinary", "ordinary")
+	settings := func() map[string]any {
+		r := callAdmin(s, admin, "GET", "users/"+u.ID+"/settings", "", false)
+		if r.Code != 200 {
+			t.Fatal(r.Body.String())
+		}
+		var out struct {
+			Items []map[string]any `json:"items"`
+		}
+		json.Unmarshal(r.Body.Bytes(), &out)
+		return out.Items[0]
+	}
+	if row := settings(); row["quota_bytes"] != nil || row["effective_quota_bytes"] != "104857600" {
+		t.Fatal("default missing", row)
+	}
+	for _, body := range []string{`{"disabled":false,"quota_mb":-1}`, `{"disabled":false,"quota_mb":1.5}`, `{"disabled":false,"quota_mb":102401}`} {
+		if r := callAdmin(s, admin, "POST", "users/"+u.ID, body, true); r.Code != 400 {
+			t.Fatal("invalid quota accepted", r.Code)
+		}
+	}
+	for _, quota := range []string{"0", "200", "null"} {
+		r := callAdmin(s, admin, "POST", "users/"+u.ID, `{"disabled":false,"quota_mb":`+quota+`}`, true)
+		if r.Code != 200 {
+			t.Fatal(r.Body.String())
+		}
+		row := settings()
+		if quota == "null" && row["quota_bytes"] != nil {
+			t.Fatal(row)
+		}
+		if quota == "0" && row["effective_quota_bytes"] != "0" {
+			t.Fatal(row)
+		}
+		if quota == "200" && row["effective_quota_bytes"] != "209715200" {
+			t.Fatal(row)
+		}
+	}
+	if r := callAdmin(s, admin, "POST", "settings", `{"quota_mb":50}`, true); r.Code != 200 {
+		t.Fatal(r.Body.String())
+	}
+	if row := settings(); row["effective_quota_bytes"] != "52428800" || row["default_quota_bytes"] != "52428800" {
+		t.Fatal("inherit did not track global", row)
+	}
+	png, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jF7sAAAAASUVORK5CYII=")
+	sum := sha256.Sum256(png)
+	hash := hex.EncodeToString(sum[:])
+	request := httptest.NewRequest("POST", "/v1/assets/"+hash, bytes.NewReader(png))
+	request.Header.Set("Content-Type", "image/png")
+	if e := s.assetRoute(httptest.NewRecorder(), request, u); e != nil {
+		t.Fatal(e)
+	}
+	path := "users/" + u.ID + "/files/" + hash
+	r := callAdmin(s, admin, "GET", path, "", false)
+	if r.Code != 200 || !bytes.Equal(r.Body.Bytes(), png) || r.Header().Get("Content-Type") != "image/png" || r.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatal("preview failed", r.Code, r.Body.String())
+	}
+	for _, cookie := range []*http.Cookie{nil, ordinary} {
+		if r := callAdmin(s, cookie, "GET", path, "", false); r.Code != 401 && r.Code != 403 {
+			t.Fatal("unprivileged preview accepted", r.Code)
+		}
+	}
+	if r := callAdmin(s, admin, "GET", "users/"+accountID(s.cfg.Issuer, "missing")+"/settings", "", false); r.Code != 404 {
+		t.Fatal("missing user accepted", r.Code)
+	}
+	if row := settings(); row["storage_bytes"] != "68" {
+		t.Fatal("usage not reported", row)
 	}
 }
