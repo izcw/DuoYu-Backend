@@ -142,6 +142,19 @@ export function merge(change, remote) {
   if (same(change.value, current)) return remote;
   if (change.revision !== remote.revision) {
     if (change.value === null) throw new ApiError(409, "delete_conflict");
+    // Desktop name and wallpaper are independent edits. Treat the image
+    // selection and its asset as one unit so they cannot be mismatched.
+    if (change.table === "preferences" && change.id.startsWith("wallpaperDesktop:") && change.base?.value && current.value && change.value?.value) {
+      const base = change.base.value, local = change.value.value, server = current.value;
+      const result = {...server};
+      for (const keys of [["name"], ["selection","asset"], ["id","created"]]) {
+        const pick = (v) => keys.map(key => v[key] ?? null);
+        if (same(pick(base),pick(local))) continue;
+        if (!same(pick(base),pick(server)) && !same(pick(local),pick(server))) throw new ApiError(409,"field_conflict");
+        for (const key of keys) { if(key in local) result[key]=local[key]; else delete result[key]; }
+      }
+      return {payload:{...current,value:result},deleted:false};
+    }
     const wanted = { ...change.value };
     let mergedIcon = false;
     if (
@@ -291,12 +304,20 @@ export function validateGraph(rows) {
       throw new ApiError(409, "missing_collection");
     if (r.table === "shortcutItems" && !all.has("shortcuts:" + p.groupId))
       throw new ApiError(409, "missing_shortcut_group");
+    if (r.table === "preferences" && p.id.startsWith("wallpaperDesktop:")) {
+      const desktop=p.value, id=p.id.slice("wallpaperDesktop:".length);
+      if (!desktop || desktop.id!==id || !Number.isFinite(desktop.created) ||
+          (desktop.name!==undefined && (typeof desktop.name!=="string" || !desktop.name.trim() || desktop.name.length>40)) ||
+          typeof desktop.selection!=="string" || !/^(daily|upload|cloud:.+|bing:.+|legacy)$/.test(desktop.selection) ||
+          (desktop.selection==="legacy" && id!=="default") ||
+          (!["daily","legacy"].includes(desktop.selection) && !/^duoyu-asset:[0-9a-f]{64}$/.test(desktop.asset ?? ""))) throw new ApiError(400,"invalid_desktop");
+    }
     if (
       r.table === "preferences" &&
       !["glassMode", "searchEngine", "dockOrder", "wallpaperMode", "wallpaperSelection", "savedWallpaper:store", "savedWallpaper:upload"].includes(
         p.id,
       ) &&
-      !p.id.startsWith("layout:")
+      !p.id.startsWith("layout:") && !/^wallpaperDesktop:(default|[0-9a-f-]{36})$/.test(p.id)
     )
       throw new ApiError(400, "invalid_preference");
   }
