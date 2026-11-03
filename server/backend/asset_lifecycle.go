@@ -171,7 +171,7 @@ func (s *Server) cleanupAssets(ctx context.Context) error {
 					return fail(500, "清理队列文件标识无效")
 				}
 				var restored bool
-				if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM sync_assets WHERE account_id=$1 AND sha256=$2)", id, hash).Scan(&restored); e != nil {
+				if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM sync_assets WHERE account_id=$1 AND sha256=$2) OR sync_backup_has_asset($1,$2)", id, hash).Scan(&restored); e != nil {
 					return e
 				}
 				if !restored {
@@ -229,7 +229,7 @@ func (s *Server) cleanupOrphanFiles(ctx context.Context) error {
 				if !stat.Mode().IsRegular() || time.Since(stat.ModTime()) < 24*time.Hour {
 					continue
 				}
-				if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM sync_assets WHERE account_id=$1 AND sha256=$2)", id, file.Name()).Scan(&exists); e != nil {
+				if e = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM sync_assets WHERE account_id=$1 AND sha256=$2) OR sync_backup_has_asset($1,$2)", id, file.Name()).Scan(&exists); e != nil {
 					return e
 				}
 				if !exists {

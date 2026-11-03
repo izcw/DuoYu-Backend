@@ -85,7 +85,7 @@ func (s *Server) adminRoute(w http.ResponseWriter, r *http.Request) error {
 		case "charts":
 			return s.rows(w, r, `SELECT d::date::text AS day,count(c.account_id)::int AS operations,count(DISTINCT c.account_id)::int AS users FROM generate_series(current_date-29,current_date,interval '1 day') d LEFT JOIN sync_changes c ON c.created_at>=d AND c.created_at<d+interval '1 day' GROUP BY d ORDER BY d`)
 		case "users":
-			return s.rows(w, r, `SELECT a.id::text,a.subject,COALESCE(u.name,'') AS name,COALESCE(u.picture,'') AS picture,a.head_revision::text,COALESCE(u.disabled,false) AS disabled,u.quota_bytes,u.last_seen,(SELECT COALESCE(sum(byte_size),0)::text FROM sync_assets f WHERE f.account_id=a.id) AS storage_bytes,count(*) OVER()::int AS total FROM sync_accounts a LEFT JOIN backend_users u ON u.account_id=a.id WHERE a.subject ILIKE $1 OR COALESCE(u.name,'') ILIKE $1 OR a.id::text ILIKE $1 ORDER BY u.last_seen DESC NULLS LAST,a.id LIMIT 20 OFFSET $2`, "%"+r.URL.Query().Get("q")+"%", pageOffset(r))
+			return s.rows(w, r, `SELECT a.id::text,a.subject,COALESCE(u.name,'') AS name,COALESCE(u.picture,'') AS picture,coalesce(u.email,'') AS email,a.head_revision::text,COALESCE(u.disabled,false) AS disabled,u.quota_bytes,u.last_seen,(SELECT COALESCE(sum(byte_size),0)::text FROM sync_assets f WHERE f.account_id=a.id) AS storage_bytes,count(*) OVER()::int AS total FROM sync_accounts a LEFT JOIN backend_users u ON u.account_id=a.id WHERE a.subject ILIKE $1 OR COALESCE(u.name,'') ILIKE $1 OR a.id::text ILIKE $1 OR u.email ILIKE $1 ORDER BY u.last_seen DESC NULLS LAST,a.id LIMIT 20 OFFSET $2`, "%"+r.URL.Query().Get("q")+"%", pageOffset(r))
 		case "settings":
 			return s.rows(w, r, "SELECT id,value FROM backend_settings ORDER BY id")
 		case "audit":
@@ -129,6 +129,9 @@ func (s *Server) adminRoute(w http.ResponseWriter, r *http.Request) error {
 			}
 			writeJSON(w, 200, map[string]any{"items": items})
 			return nil
+		}
+		if path == "backups/users" || path == "backups/system" || strings.HasPrefix(path, "backups/users/") || strings.HasPrefix(path, "backups/system/") {
+			return s.backupManagement(w, r, path)
 		}
 		if strings.HasPrefix(path, "backups/") {
 			name := strings.TrimPrefix(path, "backups/")
@@ -185,7 +188,7 @@ func (s *Server) adminRoute(w http.ResponseWriter, r *http.Request) error {
 				return s.serveAsset(w, r, id, parts[3])
 			}
 			if len(parts) == 3 && parts[2] == "sync" {
-				return s.rows(w, r, "SELECT revision::text,operation_id::text,created_at,jsonb_array_length(changes)::int AS changes,count(*) OVER()::int AS total FROM sync_changes WHERE account_id=$1 ORDER BY revision DESC LIMIT 20 OFFSET $2", id, pageOffset(r))
+				return s.rows(w, r, "SELECT revision::text,operation_id::text,created_at,jsonb_array_length(changes)::int AS changes,count(*) OVER()::int AS total FROM (SELECT revision,operation_id,created_at,changes FROM sync_changes WHERE account_id=$1 ORDER BY revision DESC LIMIT 50) recent ORDER BY revision DESC LIMIT 20 OFFSET $2", id, pageOffset(r))
 			}
 			if len(parts) == 3 && parts[2] == "conflicts" {
 				return s.rows(w, r, "SELECT operation_id::text,detail,created_at,resolved_at,count(*) OVER()::int AS total FROM sync_conflicts WHERE account_id=$1 ORDER BY created_at DESC LIMIT 20 OFFSET $2", id, pageOffset(r))
@@ -194,10 +197,14 @@ func (s *Server) adminRoute(w http.ResponseWriter, r *http.Request) error {
 		if strings.HasPrefix(path, "catalog/") {
 			parts := strings.Split(path, "/")
 			if len(parts) == 2 && validKind(parts[1]) {
-				return s.rows(w, r, "SELECT id::text,kind,name,description,status,payload,version::text,updated_at,count(*) OVER()::int AS total FROM backend_catalog WHERE kind=$1 AND name ILIKE $2 ORDER BY updated_at DESC LIMIT 20 OFFSET $3", parts[1], "%"+r.URL.Query().Get("q")+"%", pageOffset(r))
+				status := r.URL.Query().Get("status")
+				if status != "" && status != "published" && status != "draft" && status != "archived" {
+					return fail(400, "资源状态无效")
+				}
+				return s.rows(w, r, "SELECT id::text,kind,name,description,status,payload,(SELECT json_build_object('id',u.account_id,'name',u.name,'picture',u.picture,'email',u.email) FROM backend_users u WHERE u.account_id::text=payload->>'source_account_id') AS source_user,version::text,updated_at,count(*) OVER()::int AS total FROM backend_catalog WHERE kind=$1 AND name ILIKE $2 AND ($3='' OR status=$3) ORDER BY updated_at DESC LIMIT 20 OFFSET $4", parts[1], "%"+r.URL.Query().Get("q")+"%", status, pageOffset(r))
 			}
 			if len(parts) == 3 && validKind(parts[1]) && uuidPattern.MatchString(parts[2]) {
-				return s.rows(w, r, "SELECT id::text,kind,name,description,status,payload,version::text FROM backend_catalog WHERE kind=$1 AND id=$2", parts[1], parts[2])
+				return s.rows(w, r, "SELECT id::text,kind,name,description,status,payload,(SELECT json_build_object('id',u.account_id,'name',u.name,'picture',u.picture,'email',u.email) FROM backend_users u WHERE u.account_id::text=payload->>'source_account_id') AS source_user,version::text FROM backend_catalog WHERE kind=$1 AND id=$2", parts[1], parts[2])
 			}
 		}
 	}
@@ -236,7 +243,7 @@ func (s *Server) adminRoute(w http.ResponseWriter, r *http.Request) error {
 			if e := decode(w, r, &in); e != nil {
 				return e
 			}
-			if in.Kind != "backup" && in.Kind != "asset-migration" {
+			if in.Kind != "backup" && in.Kind != "backup-full" && in.Kind != "backup-incremental" && in.Kind != "asset-migration" {
 				return fail(400, "任务无效")
 			}
 			var id string
@@ -310,6 +317,26 @@ func (s *Server) adminRoute(w http.ResponseWriter, r *http.Request) error {
 			}
 			if len(parts) == 2 && payload["format"] == "duoyu-template" {
 				return fail(400, "请通过来源用户创建快照模板")
+			}
+			if parts[1] == "widgets" {
+				for _, axis := range []struct {
+					min, def, max string
+					limit         int
+				}{{"minWidth", "width", "maxWidth", 9}, {"minHeight", "height", "maxHeight", 8}} {
+					sizes := []int{1, 1, axis.limit}
+					for i, key := range []string{axis.min, axis.def, axis.max} {
+						if v, ok := payload[key]; ok {
+							n, valid := v.(float64)
+							if !valid || n != float64(int(n)) || n < 1 || n > float64(axis.limit) {
+								return fail(400, "组件尺寸超过网格范围")
+							}
+							sizes[i] = int(n)
+						}
+					}
+					if sizes[0] > sizes[1] || sizes[1] > sizes[2] {
+						return fail(400, "默认尺寸必须位于最小和最大尺寸之间")
+					}
+				}
 			}
 			if parts[1] == "widgets" && in.Status == "published" && payload["type"] != "calendar" && payload["type"] != "weather" && payload["type"] != "note" {
 				return fail(400, "扩展支持 calendar、weather、note 组件")

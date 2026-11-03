@@ -5,7 +5,7 @@ import { ElMessage } from "element-plus";
 import { session, loadSession } from "./api";
 import AdminIcon from "./AdminIcon.vue";
 import UserAvatar from "./UserAvatar.vue";
-import { menus, pageName } from "./navigation";
+import { menuGroups, pageName } from "./navigation";
 const route = useRoute(),
   router = useRouter(),
   mobile = ref(matchMedia("(max-width:800px)").matches),
@@ -116,15 +116,10 @@ async function command(value: string) {
     正在连接管理系统…
   </div>
   <div v-else-if="!session.authenticated" class="admin-login">
-    <img :src="'/admin/logo.png'" alt="多鱼" />
+    <img :src="'/logo.png'" alt="多鱼" />
     <h1>多鱼管理系统</h1>
     <p>使用多鱼账号登录</p>
     <a class="admin-login-button" href="/auth/login">登录 DuoYu ID</a>
-    <p class="dy-muted">仅账号 8888888888 可访问</p>
-    <p v-if="session.error" class="dy-muted" role="alert">
-      {{ session.error }}
-    </p>
-    <el-button text @click="loadSession">重试连接</el-button>
   </div>
   <div
     v-else
@@ -147,7 +142,7 @@ async function command(value: string) {
       aria-label="管理菜单"
     >
       <RouterLink class="sidebar-brand" to="/" aria-label="多鱼管理概览"
-        ><img :src="'/admin/logo.png'" alt="" /><span
+        ><img :src="'/logo.png'" alt="" /><span
           >多鱼管理</span
         ></RouterLink
       >
@@ -158,14 +153,16 @@ async function command(value: string) {
           :collapse="collapsed && !mobile"
           :collapse-transition="false"
           @select="navigate"
-          ><el-menu-item
-            v-for="item in menus"
+          ><template v-for="group in menuGroups" :key="group.title">
+            <li v-if="!collapsed || mobile" class="admin-menu-caption" role="presentation">{{ group.title }}</li>
+            <el-menu-item
+            v-for="item in group.items"
             :key="item.path"
             :index="item.path"
             ><AdminIcon :name="item.icon" /><template #title
               ><span>{{ item.title }}</span></template
             ></el-menu-item
-          ></el-menu
+          ></template></el-menu
         ></el-scrollbar
       >
     </aside>

@@ -21,3 +21,14 @@ DO $$ BEGIN
  END IF;
 END $$;
 GRANT DELETE ON sync_assets TO duoyu_backend;
+
+GRANT SELECT,INSERT,DELETE ON sync_user_backups TO duoyu_backend;
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_policies WHERE schemaname=current_schema() AND tablename='sync_user_backups' AND policyname='backend_management') THEN
+ CREATE POLICY backend_management ON sync_user_backups TO duoyu_backend USING(true) WITH CHECK(true);
+ END IF;
+END $$;
+
+GRANT SELECT,INSERT,DELETE ON sync_user_backups TO duoyu_sync_runtime;
+
+GRANT UPDATE(preview_sha256,preview_bytes) ON backend_catalog_files TO duoyu_backend;

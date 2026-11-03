@@ -93,13 +93,17 @@ func (s *Server) tx(ctx context.Context, id string, fn func(pgx.Tx) error) error
 	}
 	return tx.Commit(ctx)
 }
-func (s *Server) record(ctx context.Context, u Identity) error {
+func (s *Server) record(ctx context.Context, u Identity, emails ...string) error {
 	return s.tx(ctx, u.ID, func(tx pgx.Tx) error {
 		_, e := tx.Exec(ctx, "INSERT INTO sync_accounts(id,issuer,subject) VALUES($1,$2,$3) ON CONFLICT DO NOTHING", u.ID, s.cfg.Issuer, u.Sub)
 		if e != nil {
 			return e
 		}
-		_, e = tx.Exec(ctx, "INSERT INTO backend_users(account_id,name,picture) VALUES($1,$2,$3) ON CONFLICT(account_id) DO UPDATE SET name=excluded.name,picture=excluded.picture,last_seen=now()", u.ID, u.Name, u.Picture)
+		email := ""
+		if len(emails) > 0 {
+			email = emails[0]
+		}
+		_, e = tx.Exec(ctx, "INSERT INTO backend_users(account_id,name,picture,email) VALUES($1,$2,$3,$4) ON CONFLICT(account_id) DO UPDATE SET name=excluded.name,picture=excluded.picture,email=coalesce(nullif(excluded.email,''),backend_users.email),last_seen=now()", u.ID, u.Name, u.Picture, email)
 		return e
 	})
 }
@@ -133,7 +137,7 @@ func (s *Server) authenticate(r *http.Request) (Identity, error) {
 		return zero, fail(401, "登录身份不匹配")
 	}
 	u := Identity{accountID(s.cfg.Issuer, info.Sub), info.Sub, info.Name, info.Picture}
-	if e = s.record(r.Context(), u); e != nil {
+	if e = s.record(r.Context(), u, info.Email); e != nil {
 		return zero, e
 	}
 	var disabled bool
@@ -174,7 +178,7 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 		}
 	case strings.HasPrefix(r.URL.Path, "/catalog-assets/"):
 		e = s.publicAsset(w, r)
-	case strings.HasPrefix(r.URL.Path, "/v1/"):
+	case strings.HasPrefix(r.URL.Path, "/api/v1/"):
 		origin := r.Header.Get("Origin")
 		allowed := origin == "" || origin == s.cfg.Origin
 		for _, o := range s.cfg.Origins {
@@ -196,27 +200,40 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(204)
 			return
 		}
+		if r.URL.Path == "/api/v1/website-metadata" {
+			e = s.websiteMetadata(w, r)
+			break
+		}
 		var u Identity
 		u, e = s.authenticate(r)
 		if e != nil {
 			break
 		}
-		if strings.HasPrefix(r.URL.Path, "/v1/assets/") {
+		if r.URL.Path == "/api/v1/sync/backups" {
+			switch r.Method {
+			case http.MethodGet:
+				e = s.listOwnBackups(w, r, u)
+			case http.MethodPost:
+				e = s.createOwnBackup(w, r, u)
+			default:
+				e = fail(http.StatusMethodNotAllowed, "不支持此备份操作")
+			}
+		} else if strings.HasPrefix(r.URL.Path, "/api/v1/assets/") {
 			e = s.assetRoute(w, r, u)
-		} else if strings.HasPrefix(r.URL.Path, "/v1/templates/") && strings.HasSuffix(r.URL.Path, "/apply") {
-			e = s.applyTemplate(w, r, u, strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/templates/"), "/apply"))
-		} else if strings.HasPrefix(r.URL.Path, "/v1/catalog/") {
-			kind := strings.TrimPrefix(r.URL.Path, "/v1/catalog/")
+		} else if strings.HasPrefix(r.URL.Path, "/api/v1/templates/") && strings.HasSuffix(r.URL.Path, "/apply") {
+			e = s.applyTemplate(w, r, u, strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/templates/"), "/apply"))
+		} else if strings.HasPrefix(r.URL.Path, "/api/v1/catalog/") {
+			kind := strings.TrimPrefix(r.URL.Path, "/api/v1/catalog/")
 			if r.Method != "GET" || !validKind(kind) {
 				e = fail(404, "资源不存在")
 			} else {
-				e = s.rows(w, r, "SELECT id::text,kind,name,description,CASE WHEN kind='templates' AND payload->>'format'='duoyu-template' THEN jsonb_build_object('format','duoyu-template','version',1,'count',jsonb_array_length(payload->'entities')) ELSE payload END AS payload,version::text,updated_at FROM backend_catalog WHERE kind=$1 AND status='published' ORDER BY updated_at DESC LIMIT 100 OFFSET $2", kind, pageOffset(r))
+				e = s.rows(w, r, "SELECT id::text,kind,name,description,CASE WHEN kind='templates' AND payload->>'format'='duoyu-template' THEN jsonb_build_object('format','duoyu-template','version',1,'count',jsonb_array_length(payload->'entities')) WHEN kind='wallpapers' THEN payload || jsonb_build_object('preview_url',payload->>'url' || '?preview=1') ELSE payload END AS payload,version::text,updated_at FROM backend_catalog WHERE kind=$1 AND status='published' ORDER BY updated_at DESC LIMIT 100 OFFSET $2", kind, pageOffset(r))
 			}
 		} else {
 			s.proxy.ServeHTTP(w, r)
 		}
-	case r.URL.Path == "/admin" || strings.HasPrefix(r.URL.Path, "/admin/"):
-		rel := strings.TrimPrefix(r.URL.Path, "/admin/")
+	case (r.Method == "GET" || r.Method == "HEAD") && !strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/v1/") && !strings.HasPrefix(r.URL.Path, "/admin"):
+		rel := strings.TrimPrefix(r.URL.Path, "/")
 		if rel == "/admin" || rel == "" {
 			rel = "index.html"
 		}

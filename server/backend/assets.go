@@ -37,7 +37,7 @@ func validateImage(b []byte, t string) error {
 func (s *Server) relativeFile(id, hash string) string { return filepath.Join(id, hash) }
 func (s *Server) persistFile(id, hash string, b []byte) error {
 	dir := filepath.Join(s.cfg.AssetRoot, id)
-	if e := os.MkdirAll(dir, 0700); e != nil {
+	if e := os.MkdirAll(dir, 0750); e != nil {
 		return e
 	}
 	tmp, e := os.CreateTemp(dir, ".upload-")
@@ -46,7 +46,7 @@ func (s *Server) persistFile(id, hash string, b []byte) error {
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
-	if e = tmp.Chmod(0600); e == nil {
+	if e = tmp.Chmod(0640); e == nil {
 		_, e = tmp.Write(b)
 	}
 	if e == nil {
@@ -67,7 +67,7 @@ func (s *Server) quota(ctx context.Context, tx pgx.Tx, id string) (int64, error)
 	return n, e
 }
 func (s *Server) assetRoute(w http.ResponseWriter, r *http.Request, u Identity) error {
-	hash := r.URL.Path[len("/v1/assets/"):]
+	hash := r.URL.Path[len("/api/v1/assets/"):]
 	if !hashPattern.MatchString(hash) {
 		return fail(400, "文件标识不正确")
 	}

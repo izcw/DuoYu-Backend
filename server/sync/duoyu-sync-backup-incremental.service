@@ -1,0 +1,11 @@
+[Unit]
+Description=DuoYu incremental system backup
+
+[Service]
+Type=oneshot
+TimeoutStartSec=40min
+Environment=BACKUP_MODE=incremental
+ExecStartPre=/www/server/panel/pyenv/bin/python /www/server/duoyu-backup-access.py
+ExecStartPost=/www/server/panel/pyenv/bin/python /www/server/duoyu-backup-access.py
+ExecStart=/bin/node /www/wwwroot/duoyu-sync/src/backup.mjs
+UMask=0077

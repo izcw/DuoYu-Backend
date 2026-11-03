@@ -55,7 +55,61 @@ try {
       url = new URL(req.url()),
       p = url.pathname.slice("/api/admin/".length);
     let data = { items: [] };
-    if (p === "me")
+    if (p === "backups/users")
+      data = {
+        items: [
+          {
+            id: "11111111-1111-4111-8111-111111111111",
+            subject: "backup-user",
+            name: "备份用户",
+            picture: "",
+            backup_count: 5,
+            latest_backup: new Date().toISOString(),
+            total: 1,
+          },
+        ],
+      };
+    else if (p.startsWith("backups/users/"))
+      data = {
+        items: [
+          {
+            id: "22222222-2222-4222-8222-222222222222",
+            revision: "7",
+            created_at: new Date().toISOString(),
+            entity_count: 10,
+          },
+        ],
+      };
+    else if (p === "backups/system")
+      data = {
+        items: [
+          {
+            id: "11111111-1111-4111-8111-111111111111",
+            kind: "incremental",
+            created_at: new Date().toISOString(),
+            bytes: 1024,
+            added_bytes: 100,
+          },
+        ],
+      };
+    else if (p.startsWith("catalog/wallpapers")) {
+      const status = url.searchParams.get("status") || "draft";
+      data = {
+        items: [
+          {
+            id: "wallpaper-test",
+            name: "壁纸-" + status,
+            description: "预览测试",
+            status,
+            version: "1",
+            total: 1,
+            payload: { url: base + "/logo.png" },
+            updated_at: new Date().toISOString(),
+          },
+        ],
+      };
+    } else if (p === "catalog-assets") data = { url: base + "/logo.png" };
+    else if (p === "me")
       data = {
         account_id: "8888888888",
         csrf: "test",
@@ -174,7 +228,7 @@ try {
       ),
     }),
   );
-  await page.goto(base + "/admin/");
+  await page.goto(base + "/");
   await page.getByRole("heading", { name: "概览", exact: true }).waitFor();
   await page.locator("canvas").waitFor();
   assert.equal(
@@ -198,7 +252,7 @@ try {
       .evaluate((el) => el.getBoundingClientRect().height),
     42,
   );
-  assert.equal(await page.locator(".el-menu-item svg").count(), 9);
+  assert.equal(await page.locator(".el-menu-item svg").count(), 8);
   await page.getByRole("button", { name: "收起菜单", exact: true }).click();
   await page.waitForTimeout(250);
   assert.equal(
@@ -273,7 +327,7 @@ try {
   await page.getByRole("dialog").waitFor({ state: "hidden" });
   await page.screenshot({ path: "work/admin-templates.png", fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(base + "/admin/");
+  await page.goto(base + "/");
   await page.locator("canvas").waitFor();
   assert.equal(
     await page.locator(".dy-header-username").textContent(),
@@ -326,6 +380,63 @@ try {
     .click();
   await page.getByText("暂无数据", { exact: true }).waitFor();
   assert(fileDeleted);
+  await page.goto(base + "/wallpapers");
+  await page.getByText("壁纸-published", { exact: true }).waitFor();
+  await page.locator(".wallpaper-card img").first().waitFor();
+  await page.getByRole("tab", { name: "未发布", exact: true }).click();
+  await page.getByText("壁纸-draft", { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "归档", exact: true }).click();
+  await page.getByText("壁纸-archived", { exact: true }).waitFor();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.waitForTimeout(500);
+  await page.screenshot({
+    path: "work/admin-wallpaper-cards.png",
+    fullPage: true,
+  });
+  await page.locator(".wallpaper-card").first().hover();
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await page.locator(".wallpaper-large-preview img").waitFor();
+  assert.equal(
+    await page.getByText("资源配置 JSON", { exact: true }).count(),
+    0,
+  );
+  await page
+    .getByLabel("上传壁纸", { exact: true })
+    .setInputFiles("admin/public/logo.png");
+  await page.getByText("图片已上传", { exact: true }).waitFor();
+  assert(
+    await page
+      .locator(".wallpaper-large-preview img")
+      .evaluate((img) => img.naturalWidth > 0),
+  );
+  await page.screenshot({
+    path: "work/admin-wallpaper-preview.png",
+    fullPage: true,
+  });
+  await page.goto(base + "/sync");
+  await page.waitForURL("**/backups");
+  await page.getByRole("heading", {name:"同步与备份",exact:true}).waitFor();
+  await page.getByText("备份用户", { exact: true }).waitFor();
+  await page.getByText("5 / 5", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "查看备份", exact: true }).click();
+  await page.getByRole("link", { name: "下载备份", exact: true }).waitFor();
+  assert(
+    (
+      await page
+        .getByRole("link", { name: "下载备份", exact: true })
+        .getAttribute("href")
+    ).includes("/backups/users/"),
+  );
+  await page.goto(base + "/backups");
+  await page.getByRole("tab", { name: "系统备份", exact: true }).click();
+  await page.getByText("增量备份", { exact: true }).waitFor();
+  await page
+    .getByRole("button", { name: "创建全量备份", exact: true })
+    .waitFor();
+  await page.screenshot({
+    path: "work/admin-system-backups.png",
+    fullPage: true,
+  });
   assert.deepEqual(errors, []);
   console.log(
     "PASS desktop/mobile admin UI, charts, user snapshot template creation, official-default selection, inherited/custom/zero quota and authenticated image preview; no page errors",

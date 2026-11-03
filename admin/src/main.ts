@@ -8,9 +8,10 @@ const Dashboard = () => import('./Dashboard.vue');
 const Manage = () => import('./Manage.vue');
 import './style.css';
 const router = createRouter({
-  history: createWebHistory('/admin/'),
+  history: createWebHistory('/'),
   routes: [
     { path: '/', component: Dashboard },
+    { path: '/sync', redirect: '/backups' },
     { path: '/:section/:id?/:tab?', component: Manage },
   ],
 });

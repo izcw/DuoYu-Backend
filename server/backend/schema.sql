@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS backend_sessions(hash text PRIMARY KEY,encrypted byte
 CREATE TABLE IF NOT EXISTS backend_jobs(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),kind text NOT NULL CHECK(kind IN ('backup','asset-migration')),status text NOT NULL DEFAULT 'queued',error text NOT NULL DEFAULT '',created_at timestamptz NOT NULL DEFAULT now(),finished_at timestamptz);
 ALTER TABLE backend_users ADD COLUMN IF NOT EXISTS initialized boolean NOT NULL DEFAULT false;
 -- Existing project accounts, including intentionally empty ones, are not new registrations.
+ALTER TABLE backend_users ADD COLUMN IF NOT EXISTS email text NOT NULL DEFAULT '';
 INSERT INTO backend_users(account_id,initialized) SELECT id,true FROM sync_accounts ON CONFLICT(account_id) DO NOTHING;
 CREATE TABLE IF NOT EXISTS backend_template_applies(account_id uuid NOT NULL REFERENCES sync_accounts(id),request_id uuid NOT NULL,template_id uuid NOT NULL,revision bigint NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(account_id,request_id));
 CREATE OR REPLACE FUNCTION sync_asset_size() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.body IS NOT NULL THEN NEW.byte_size=octet_length(NEW.body); END IF; RETURN NEW; END $$;
@@ -23,3 +24,9 @@ CREATE TRIGGER sync_asset_size_trigger BEFORE INSERT OR UPDATE ON sync_assets FO
 COMMIT;
 
 ALTER TABLE backend_users ADD COLUMN IF NOT EXISTS picture text NOT NULL DEFAULT '';
+
+ALTER TABLE backend_jobs DROP CONSTRAINT IF EXISTS backend_jobs_kind_check;
+ALTER TABLE backend_jobs ADD CONSTRAINT backend_jobs_kind_check CHECK(kind IN ('backup','backup-full','backup-incremental','asset-migration'));
+
+ALTER TABLE backend_catalog_files ADD COLUMN IF NOT EXISTS preview_sha256 text;
+ALTER TABLE backend_catalog_files ADD COLUMN IF NOT EXISTS preview_bytes bigint;

@@ -80,3 +80,17 @@ for path in directory.iterdir():
         grant(path, 'r--')
         count += 1
 print('Backup ACL ready; encrypted files:', count)
+
+# Include the manifests and encrypted chunks produced by system snapshots.
+for path in directory.glob('*.record.json'):
+    if stat.S_ISREG(path.lstat().st_mode):
+        grant(path, 'r--')
+objects = directory / 'objects'
+if objects.exists() and stat.S_ISDIR(objects.lstat().st_mode):
+    grant(objects, 'r-x')
+    for path in objects.rglob('*'):
+        mode = path.lstat().st_mode
+        if stat.S_ISDIR(mode):
+            grant(path, 'r-x')
+        elif stat.S_ISREG(mode):
+            grant(path, 'r--')

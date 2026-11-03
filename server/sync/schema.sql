@@ -74,3 +74,39 @@ BEGIN
  GET DIAGNOSTICS removed=ROW_COUNT;
  RETURN removed;
 END $$;
+
+-- The snapshot and the accepted cloud revision commit or roll back together.
+CREATE TABLE IF NOT EXISTS sync_user_backups(
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ account_id uuid NOT NULL REFERENCES sync_accounts(id),
+ epoch uuid NOT NULL, revision bigint NOT NULL,
+ snapshot jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ UNIQUE(account_id,epoch,revision)
+);
+CREATE INDEX IF NOT EXISTS sync_user_backups_recent ON sync_user_backups(account_id,created_at DESC);
+ALTER TABLE sync_user_backups ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sync_user_backups FORCE ROW LEVEL SECURITY;
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_policies WHERE schemaname=current_schema() AND tablename='sync_user_backups' AND policyname='account_isolation') THEN
+ CREATE POLICY account_isolation ON sync_user_backups USING(account_id=nullif(current_setting('app.account_id',true),'')::uuid) WITH CHECK(account_id=nullif(current_setting('app.account_id',true),'')::uuid);
+ END IF;
+END $$;
+CREATE OR REPLACE FUNCTION sync_capture_user_backup(owner_id uuid,rev bigint) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE entities jsonb; assets jsonb; generation uuid;
+BEGIN
+ PERFORM id FROM sync_accounts WHERE id=owner_id FOR UPDATE;
+ SELECT epoch INTO generation FROM sync_generation WHERE singleton;
+ SELECT coalesce(jsonb_agg(jsonb_build_object('table',entity_type,'id',entity_id,'payload',payload,'deleted',deleted,'revision',revision::text) ORDER BY entity_type,entity_id),'[]'::jsonb) INTO entities FROM sync_entities WHERE account_id=owner_id;
+ SELECT coalesce(jsonb_object_agg(sha256,jsonb_build_object('media_type',media_type,'bytes',coalesce((to_jsonb(a)->>'byte_size')::bigint,octet_length(body),0),'body',CASE WHEN body IS NOT NULL THEN encode(body,'base64') ELSE NULL END)),'{}'::jsonb) INTO assets FROM sync_assets a
+ WHERE account_id=owner_id AND sha256 IN(SELECT sync_asset_references(payload) FROM sync_entities WHERE account_id=owner_id AND NOT deleted);
+ INSERT INTO sync_user_backups(account_id,epoch,revision,snapshot) VALUES(owner_id,generation,rev,jsonb_build_object('format','duoyu-user-snapshot','version',1,'account_id',owner_id,'epoch',generation,'revision',rev::text,'entities',entities,'assets',assets)) ON CONFLICT DO NOTHING;
+ DELETE FROM sync_user_backups WHERE account_id=owner_id AND id NOT IN(SELECT id FROM sync_user_backups WHERE account_id=owner_id ORDER BY created_at DESC,id DESC LIMIT 5);
+END $$;
+CREATE OR REPLACE FUNCTION sync_backup_on_change() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+ PERFORM sync_capture_user_backup(NEW.account_id,NEW.revision); RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS sync_user_backup_trigger ON sync_changes;
+CREATE TRIGGER sync_user_backup_trigger AFTER INSERT ON sync_changes FOR EACH ROW EXECUTE FUNCTION sync_backup_on_change();
+CREATE OR REPLACE FUNCTION sync_backup_has_asset(owner_id uuid,hash text) RETURNS boolean LANGUAGE sql STABLE AS $$
+ SELECT EXISTS(SELECT 1 FROM sync_user_backups WHERE account_id=owner_id AND snapshot->'assets' ? hash)
+$$;

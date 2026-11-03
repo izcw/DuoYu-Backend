@@ -21,6 +21,7 @@ type userProfile struct {
 	Sub     string `json:"sub"`
 	Name    string `json:"name"`
 	Picture string `json:"picture"`
+	Email   string `json:"email"`
 }
 
 func randomToken() string {
@@ -177,7 +178,7 @@ func (s *Server) authRoute(w http.ResponseWriter, r *http.Request) error {
 		}
 		s.cookie(w, "duoyu_admin", key, 43200)
 		s.audit(r.Context(), "admin.login", "")
-		http.Redirect(w, r, "/admin/", 302)
+		http.Redirect(w, r, "/", 302)
 		return nil
 	case "/auth/logout":
 		if r.Method != "POST" {

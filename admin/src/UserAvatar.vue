@@ -10,9 +10,9 @@ const image = computed(() => {
     const u = new URL(props.src || "", location.origin);
     return props.src && u.protocol === "https:"
       ? u.href
-      : "/admin/avatar-default.svg";
+      : "/avatar-default.svg";
   } catch {
-    return "/admin/avatar-default.svg";
+    return "/avatar-default.svg";
   }
 });
 watch(
@@ -23,7 +23,7 @@ watch(
 <template>
   <img
     class="user-avatar"
-    :src="failed ? '/admin/avatar-default.svg' : image"
+    :src="failed ? '/avatar-default.svg' : image"
     :alt="(name || '用户') + '的头像'"
     :style="{ width: size + 'px', height: size + 'px' }"
     referrerpolicy="no-referrer"

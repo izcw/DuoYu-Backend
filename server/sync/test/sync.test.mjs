@@ -42,6 +42,7 @@ await test("PostgreSQL sync transactions and API", async (t) => {
       const first = await applyOperation(pool, a, op);
       assert.equal(first.revision, "1");
       assert.deepEqual(await applyOperation(pool, a, op), first);
+      assert.equal(Number((await pool.query('SELECT count(*) FROM sync_user_backups WHERE account_id=$1',[a.id])).rows[0].count),1);
       await assert.rejects(
         applyOperation(pool, a, {
           ...op,
@@ -277,16 +278,16 @@ await test("PostgreSQL sync transactions and API", async (t) => {
     await t.test(
       "snapshot isolation and cross-account access denied",
       async () => {
-        const r = await fetch(origin + "/v1/sync/snapshot", {
+        const r = await fetch(origin + "/api/v1/sync/snapshot", {
           headers: { Authorization: "Bearer b" },
         });
         const s = await r.json();
         assert.equal(s.entities.length, 12);
         assert(s.entities.every((e) => e.id.startsWith("parallel-")));
-        assert.equal((await fetch(origin + "/v1/sync/snapshot")).status, 401);
+        assert.equal((await fetch(origin + "/api/v1/sync/snapshot")).status, 401);
         assert.equal(
           (
-            await fetch(origin + "/v1/sync/snapshot", {
+            await fetch(origin + "/api/v1/sync/snapshot", {
               headers: {
                 Origin: "https://evil.invalid",
                 Authorization: "Bearer a",
@@ -300,7 +301,7 @@ await test("PostgreSQL sync transactions and API", async (t) => {
     await t.test(
       "incremental pull never splits an atomic operation",
       async () => {
-        const r = await fetch(origin + "/v1/sync/changes?after=0", {
+        const r = await fetch(origin + "/api/v1/sync/changes?after=0", {
           headers: { Authorization: "Bearer a" },
         });
         const s = await r.json();
@@ -410,7 +411,7 @@ await test("PostgreSQL sync transactions and API", async (t) => {
       const sha = "a".repeat(64);
       assert.equal(
         (
-          await fetch(origin + "/v1/assets/" + sha, {
+          await fetch(origin + "/api/v1/assets/" + sha, {
             method: "POST",
             headers: { Authorization: "Bearer a", "Content-Type": "image/png" },
             body: "bad",
@@ -420,7 +421,7 @@ await test("PostgreSQL sync transactions and API", async (t) => {
       );
       assert.equal(
         (
-          await fetch(origin + "/v1/assets/" + sha, {
+          await fetch(origin + "/api/v1/assets/" + sha, {
             headers: { Authorization: "Bearer b" },
           })
         ).status,
@@ -435,6 +436,7 @@ await pool.query("DELETE FROM sync_assets WHERE account_id=ANY($1::uuid[])", [
   [a.id, b.id],
 ]);
 for (const table of [
+  "sync_user_backups",
   "sync_asset_deletions",
   "sync_conflicts",
   "sync_receipts",

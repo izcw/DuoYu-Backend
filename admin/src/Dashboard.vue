@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PageHeading from "./PageHeading.vue";
 import { onMounted, onUnmounted, ref, nextTick } from 'vue';
 import * as echarts from 'echarts/core';
 import { LineChart } from 'echarts/charts';
@@ -95,13 +96,7 @@ onUnmounted(() => {
 </script>
 <template>
   <section class="dy-page art-page-view">
-    <div class="dy-heading">
-      <div>
-        <h1>概览</h1>
-        <p>存储、同步与内容发布</p>
-      </div>
-      <el-button :loading="busy" @click="load">刷新</el-button>
-    </div>
+    <PageHeading title="概览" description="存储、同步与内容发布" :busy="busy" @refresh="load" />
     <el-alert
       v-if="error"
       :title="error"
@@ -128,7 +123,7 @@ onUnmounted(() => {
           ><b>壁纸管理</b><span>审核与发布官方壁纸</span></RouterLink
         >
         <RouterLink class="dy-shortcut" to="/backups"
-          ><strong>备份管理</strong
+          ><strong>同步与备份</strong
           ><span>查看备份记录与恢复任务</span></RouterLink
         >
       </div>

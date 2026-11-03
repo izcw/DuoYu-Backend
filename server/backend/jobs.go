@@ -63,12 +63,19 @@ func (s *Server) runJob(ctx context.Context) error {
 	if e != nil {
 		return e
 	}
-	jobctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	jobctx, cancel := context.WithTimeout(ctx, 45*time.Minute)
 	defer cancel()
 	if kind == "asset-migration" {
 		e = s.migrateAssets(jobctx)
 	} else {
-		e = exec.CommandContext(jobctx, "sudo", "-n", "/usr/bin/systemctl", "start", "--wait", "duoyu-sync-backup.service").Run()
+		service := "duoyu-sync-backup.service"
+		if kind == "backup-full" {
+			service = "duoyu-sync-backup-full.service"
+		}
+		if kind == "backup-incremental" {
+			service = "duoyu-sync-backup-incremental.service"
+		}
+		e = exec.CommandContext(jobctx, "sudo", "-n", "/usr/bin/systemctl", "start", "--wait", service).Run()
 	}
 	status, message := "succeeded", ""
 	if e != nil {

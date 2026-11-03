@@ -654,3 +654,12 @@ button {
     flex-wrap: wrap;
   }
 }
+
+.admin-search { display:flex; gap:8px; align-items:center; width:min(100%, 400px); }
+.dy-page .dy-heading { align-items:center; gap:16px; flex-wrap:wrap; }
+.dy-panel .el-tabs__header { margin-bottom:18px; }
+.dy-panel .el-table { --el-table-header-bg-color:#f6f7f9; --el-table-row-hover-bg-color:#f8f9fb; }
+.dy-panel .el-table a { color:var(--el-color-primary); text-decoration:none; }
+.dy-panel .el-table a:hover { text-decoration:underline; }
+
+.admin-menu-caption { list-style:none; padding:16px 20px 5px; font-size:12px; font-weight:600; color:var(--el-text-color-secondary); }

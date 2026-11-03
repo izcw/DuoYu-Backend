@@ -9,23 +9,21 @@ import {
 import { ElMessage, ElMessageBox } from "element-plus";
 import { api, size, date, session } from "./api";
 import UserAvatar from "./UserAvatar.vue";
+import { pageName } from "./navigation";
+import PageHeading from "./PageHeading.vue";
+import AdminSearch from "./AdminSearch.vue";
 import FilePreview from "./FilePreview.vue";
 const route = useRoute(),
   router = useRouter();
 const section = computed(() => String(route.params.section)),
   id = computed(() => String(route.params.id || "")),
   tab = computed(() => String(route.params.tab || "files"));
-const labels: Record<string, string> = {
-  users: "用户管理",
-  templates: "模板管理",
-  widgets: "组件管理",
-  wallpapers: "壁纸管理",
-  backups: "备份管理",
-  sync: "同步管理",
-  settings: "存储设置",
-  audit: "操作记录",
+const title = computed(() => pageName(section.value));
+const descriptions:Record<string,string> = {
+  users:"查看账号文件、存储配额与访问状态", templates:"从用户数据创建快照，管理发布状态和官方默认模板",
+  widgets:"设置组件类型、默认尺寸和可调整范围", wallpapers:"上传预览并管理已发布、草稿和归档壁纸",
+  backups:"查看用户同步历史、处理冲突或下载备份", settings:"设置用户文件的默认存储配额", audit:"查看管理员操作的时间、动作及对象"
 };
-const title = computed(() => labels[section.value] || "管理");
 const catalog = computed(() =>
   ["templates", "widgets", "wallpapers"].includes(section.value),
 );
@@ -47,6 +45,48 @@ const statusNames: Record<string, string> = {
   draft: "草稿",
   archived: "已归档",
 };
+const jobStatus: Record<string, string> = {
+  queued: "等待中",
+  running: "进行中",
+  succeeded: "已完成",
+  failed: "失败",
+};
+const backupView = ref("users");
+function changeBackupView() {
+  if (id.value) {
+    void router.push("/backups");
+    return;
+  }
+  if (page.value === 1) void load();
+  else page.value = 1;
+}
+const actionNames:Record<string,string> = {'catalog.upload':'上传壁纸图片','catalog.save':'保存内容','catalog.delete':'删除内容','template.capture':'保存用户模板快照','template.default':'设置默认模板','backup.user.download':'下载用户备份','backup.system.download':'下载系统备份','backup.download':'下载备份','job.create':'创建后台任务','settings.quota':'修改默认配额','user.update':'修改账号设置','asset.read':'预览用户文件','asset.delete':'删除用户文件','admin.login':'管理员登录','admin.logout':'管理员退出'};
+const backupKind = (kind: string) =>
+  ({
+    full: "全量备份",
+    incremental: "增量备份",
+    "backup-full": "全量备份",
+    "backup-incremental": "增量备份",
+    backup: "自动备份",
+  })[kind] || kind;
+const wallpaperStatus = ref("published");
+const uploadPreview = ref("");
+const wallpaperImage = computed(() => {
+  if (uploadPreview.value) return uploadPreview.value;
+  try {
+    return JSON.parse(configText.value).url || "";
+  } catch {
+    return "";
+  }
+});
+function releaseUploadPreview() {
+  if (uploadPreview.value) URL.revokeObjectURL(uploadPreview.value);
+  uploadPreview.value = "";
+}
+function changeWallpaperStatus() {
+  if (page.value === 1) void load();
+  else page.value = 1;
+}
 const inheritQuota = ref(true);
 const quotaMode = computed({
   get: () => (inheritQuota.value ? "default" : "custom"),
@@ -84,6 +124,10 @@ function quotaModeChanged() {
       Number(userProfile.value.default_quota_bytes || 104857600) / 1048576;
   dirty.value = true;
 }
+function submitSearch() {
+  if (page.value === 1) void load();
+  else page.value = 1;
+}
 let loadSeq = 0;
 async function load() {
   const seq = ++loadSeq;
@@ -92,12 +136,15 @@ async function load() {
   dirty.value = false;
   try {
     let path = section.value;
+    if (section.value === "backups")
+      path = id.value
+        ? "backups/users/" + id.value
+        : "backups/" + backupView.value;
     if (catalog.value)
       path =
         "catalog/" +
         path +
         (id.value && id.value !== "new" ? "/" + id.value : "");
-    else if (section.value === "sync") path = "users";
     else if (section.value === "users" && id.value)
       path = "users/" + id.value + "/" + tab.value;
     if (catalog.value && id.value === "new") {
@@ -108,8 +155,11 @@ async function load() {
         version: 0,
         source: String(route.query.source || ""),
       };
-      if (section.value === "templates")
-        sourceUsers.value = (await api("users")).items;
+      if (section.value === "templates") {
+        const result = await api("users");
+        if (seq !== loadSeq) return;
+        sourceUsers.value = result.items;
+      }
       configText.value = JSON.stringify(
         section.value === "wallpapers"
           ? { url: "", credit: "" }
@@ -123,11 +173,19 @@ async function load() {
         null,
         2,
       );
+      if (section.value === "widgets") form.value.widget = {type:"calendar",minWidth:1,minHeight:1,width:3,height:2,maxWidth:5,maxHeight:4};
       items.value = [];
       return;
     }
     const result = await api(
-      path + "?page=" + page.value + "&q=" + encodeURIComponent(search.value),
+      path +
+        "?page=" +
+        page.value +
+        "&q=" +
+        encodeURIComponent(search.value) +
+        (section.value === "wallpapers" && !id.value
+          ? "&status=" + wallpaperStatus.value
+          : ""),
     );
     if (seq !== loadSeq) return;
     items.value = result.items || [];
@@ -135,6 +193,9 @@ async function load() {
     if (catalog.value && id.value) {
       if (!items.value.length) throw Error("资源不存在");
       form.value = { ...items.value[0] };
+      form.value.source = form.value.payload?.source_account_id;
+      if (section.value === "templates") sourceUsers.value = form.value.source_user ? [form.value.source_user] : [];
+      if (section.value === "widgets") form.value.widget = {type:"calendar",minWidth:1,minHeight:1,width:3,height:2,maxWidth:5,maxHeight:4,...form.value.payload};
       configText.value = JSON.stringify(form.value.payload, null, 2);
     }
     if (section.value === "users" && id.value && tab.value === "settings") {
@@ -162,7 +223,10 @@ async function load() {
         (await api("settings")).items.find(
           (x: any) => x.id === "default_template_id",
         )?.value || "";
-    if (section.value === "backups") jobs.value = (await api("jobs")).items;
+    if (section.value === "backups" && !id.value && backupView.value === "system") {
+      const result = await api("jobs");
+      if (seq === loadSeq) jobs.value = result.items;
+    }
   } catch (e) {
     if (seq === loadSeq)
       error.value = e instanceof Error ? e.message : String(e);
@@ -173,10 +237,15 @@ async function load() {
 watch(
   () => route.fullPath,
   () => {
+    const resetPage = page.value !== 1;
     page.value = 1;
     search.value = "";
     previewFile.value = null;
-    void load();
+    releaseUploadPreview();
+    items.value = [];
+    total.value = 0;
+    sourceUsers.value = [];
+    if (!resetPage) void load();
   },
   { immediate: true },
 );
@@ -197,9 +266,10 @@ onBeforeRouteUpdate(canLeave);
 async function save() {
   busy.value = true;
   try {
-    if (section.value === "templates" && id.value === "new") {
+    if (section.value === "templates" && (id.value === "new" || form.value.source !== form.value.payload?.source_account_id)) {
       const result = await api("templates/capture", {
         account_id: form.value.source,
+        ...(id.value !== "new" ? {id:id.value,version:Number(form.value.version),status:form.value.status} : {}),
         name: form.value.name,
         description: form.value.description,
       });
@@ -222,7 +292,7 @@ async function save() {
         name: form.value.name,
         description: form.value.description,
         status: form.value.status,
-        payload: form.value.payload?.format === "duoyu-template" ? {} : payload,
+        payload: section.value === "widgets" ? form.value.widget : form.value.payload?.format === "duoyu-template" ? {} : payload,
         version: Number(form.value.version),
       },
     );
@@ -235,8 +305,18 @@ async function save() {
     busy.value = false;
   }
 }
+let sourceSearch = 0;
 async function findUsers(q: string) {
-  sourceUsers.value = (await api("users?q=" + encodeURIComponent(q))).items;
+  const request = ++sourceSearch, path = route.fullPath;
+  try {
+    const result = await api("users?q=" + encodeURIComponent(q));
+    if (request !== sourceSearch || route.fullPath !== path) return;
+    const selected = sourceUsers.value.find(user => user.id === form.value.source);
+    sourceUsers.value = selected && !result.items.some((user:any) => user.id === selected.id)
+      ? [selected, ...result.items] : result.items;
+  } catch (e) {
+    if (request === sourceSearch && route.fullPath === path) ElMessage.error(String(e));
+  }
 }
 async function setDefault(row?: any) {
   try {
@@ -348,6 +428,8 @@ async function job(kind: string) {
 async function upload(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0];
   if (!file) return;
+  releaseUploadPreview();
+  uploadPreview.value = URL.createObjectURL(file);
   busy.value = true;
   try {
     const r = await fetch("/api/admin/catalog-assets", {
@@ -359,19 +441,37 @@ async function upload(event: Event) {
     if (!r.ok) throw Error(data.error);
     const cfg = JSON.parse(configText.value);
     cfg.url = data.url;
+    cfg.preview_url = data.preview_url;
     configText.value = JSON.stringify(cfg, null, 2);
     dirty.value = true;
     ElMessage.success("图片已上传");
   } catch (e) {
+    releaseUploadPreview();
     ElMessage.error(String(e));
   } finally {
     busy.value = false;
+    (event.target as HTMLInputElement).value = "";
   }
 }
+onUnmounted(releaseUploadPreview);
 async function refreshPage() {
   if (await canLeave()) await load();
 }
-onMounted(() => window.addEventListener("duoyu-admin-refresh", refreshPage));
+let backupPoll: ReturnType<typeof setInterval> | undefined;
+onMounted(() => {
+  window.addEventListener("duoyu-admin-refresh", refreshPage);
+  backupPoll = setInterval(() => {
+    if (
+      section.value === "backups" &&
+      backupView.value === "system" &&
+      !id.value &&
+      !busy.value &&
+      jobs.value.some((job) => ["queued", "running"].includes(job.status))
+    )
+      void load();
+  }, 3000);
+});
+onUnmounted(() => clearInterval(backupPoll));
 onUnmounted(() =>
   window.removeEventListener("duoyu-admin-refresh", refreshPage),
 );
@@ -384,28 +484,22 @@ onUnmounted(() =>
       :to="'/' + section"
       >← 返回{{ title }}</RouterLink
     >
-    <div class="dy-heading">
-      <div>
-        <h1>
-          {{ title }}{{ id ? (id === "new" ? " / 新建" : " / 详情") : "" }}
-        </h1>
-        <p v-if="section === 'users'">
-          项目账号与文件配额；账号身份由 DuoYu ID 管理
-        </p>
-        <p v-else-if="section === 'sync'">
-          查看修订和冲突，停用账号可暂停其全部同步访问
-        </p>
-      </div>
-      <div class="dy-toolbar">
-        <el-button :loading="busy" @click="refreshPage">刷新</el-button
-        ><el-button
+    <PageHeading :title="title + (id ? (id === 'new' ? ' / 新建' : ' / 详情') : '')"
+      :description="descriptions[section]" :busy="busy" @refresh="refreshPage">
+      <el-button
           v-if="catalog && !id"
           type="primary"
           @click="router.push('/' + section + '/new')"
           >{{ section === "templates" ? "从用户创建" : "新增" }}</el-button
         >
-      </div>
-    </div>
+    </PageHeading>
+
+        <div v-if="id && (section === 'backups' || (section === 'users' && tab !== 'settings'))" class="tabs">
+          <RouterLink :to="'/users/' + id + '/files'">文件</RouterLink
+          ><RouterLink :to="'/users/' + id + '/sync'">同步历史</RouterLink
+          ><RouterLink :to="'/backups/' + id">数据备份</RouterLink
+          ><RouterLink :to="'/users/' + id + '/conflicts'">冲突记录</RouterLink>
+        </div>
     <el-alert
       v-if="error"
       :title="error"
@@ -418,10 +512,10 @@ onUnmounted(() =>
         ><el-form-item label="名称"
           ><el-input v-model="form.name" maxlength="100" /></el-form-item
         ><el-form-item
-          v-if="section === 'templates' && id === 'new'"
+          v-if="section === 'templates'"
           label="来源用户"
           ><el-select
-            v-model="form.source"
+            v-model="form.source" @change="dirty = true"
             filterable
             remote
             :remote-method="findUsers"
@@ -430,7 +524,7 @@ onUnmounted(() =>
               v-for="u in sourceUsers"
               :key="u.id"
               :label="(u.name || u.subject) + ' · ' + u.id"
-              :value="u.id" /></el-select></el-form-item
+              :value="u.id"><UserAvatar :src="u.picture" :name="u.name" :size="24"/> {{ u.name || u.subject || u.id }} · {{ u.email || '未提供邮箱' }}</el-option><template #label><UserAvatar :src="sourceUsers.find(u=>u.id===form.source)?.picture" :size="24"/> {{ sourceUsers.find(u=>u.id===form.source)?.name || form.source }} · {{ sourceUsers.find(u=>u.id===form.source)?.email || '未提供邮箱' }}</template></el-select></el-form-item
         ><el-form-item label="说明"
           ><el-input
             v-model="form.description"
@@ -445,27 +539,50 @@ onUnmounted(() =>
               value="published" /><el-option
               label="已归档"
               value="archived" /></el-select></el-form-item
-        ><el-form-item v-if="section === 'wallpapers'" label="壁纸图片"
-          ><input
-            type="file"
-            accept="image/png,image/jpeg,image/webp,image/gif"
-            @change="upload"
-          />
-          <p class="dy-muted">
-            上传后自动填写配置的 url。发布后可公开下载，请勿上传用户私密文件。
-          </p></el-form-item
-        ><el-form-item
-          v-if="!(section === 'templates' && id === 'new')"
-          label="资源配置 JSON"
-          ><el-input
-            v-model="configText"
-            type="textarea"
-            :rows="14"
-            :readonly="form.payload?.format === 'duoyu-template'"
-            class="json-input"
-            @input="dirty = true"
-        /></el-form-item>
-        <p class="dy-muted">
+        ><el-form-item v-if="section === 'wallpapers'" label="壁纸图片">
+          <div class="wallpaper-upload">
+            <el-image
+              v-if="wallpaperImage"
+              class="wallpaper-large-preview"
+              :src="wallpaperImage"
+              fit="contain"
+              :preview-src-list="[wallpaperImage]"
+              preview-teleported
+            >
+              <template #error
+                ><div class="wallpaper-image-empty">
+                  图片无法加载，请重新上传
+                </div></template
+              >
+            </el-image>
+            <div v-else class="wallpaper-upload-empty">
+              上传壁纸，在这里预览完整图片
+            </div>
+            <label
+              class="el-button wallpaper-upload-button"
+              :class="{ 'is-disabled': busy }"
+            >
+              {{
+                busy ? "正在上传…" : wallpaperImage ? "替换壁纸" : "上传壁纸"
+              }}
+              <input
+                type="file"
+                aria-label="上传壁纸"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                :disabled="busy"
+                @change="upload"
+              />
+            </label>
+            <span class="dy-muted"
+              >支持 PNG、JPG、WebP、GIF，点击大图可查看原图</span
+            >
+          </div>
+        </el-form-item>
+        <template v-if="section === 'widgets' && form.widget">
+          <el-form-item label="组件类型"><el-select v-model="form.widget.type" @change="dirty = true"><el-option v-for="(label,key) in {calendar:'日历',weather:'天气',note:'便签'}" :key="key" :label="label" :value="key"/></el-select></el-form-item>
+          <el-form-item v-for="([label,w,h]) in [['最小尺寸','minWidth','minHeight'],['默认尺寸','width','height'],['最大尺寸','maxWidth','maxHeight']]" :key="w" :label="label"><el-input-number v-model="form.widget[w]" @change="dirty = true" :min="1" :max="9"/> 列 × <el-input-number v-model="form.widget[h]" @change="dirty = true" :min="1" :max="8"/> 行</el-form-item>
+        </template>
+        <p v-if="section !== 'wallpapers'" class="dy-muted">
           {{
             section === "widgets"
               ? "组件仅配置扩展支持的类型，不执行远程脚本。"
@@ -585,29 +702,147 @@ onUnmounted(() =>
         </div>
       </el-form>
     </div>
-    <template v-else
-      ><div v-if="section === 'backups'" class="dy-panel">
-        <h2>加密备份</h2>
+    <div v-else-if="section === 'backups'" class="dy-panel">
+      <el-tabs v-if="!id" v-model="backupView" @tab-change="changeBackupView">
+        <el-tab-pane label="用户数据备份" name="users" />
+        <el-tab-pane label="系统备份" name="system" />
+      </el-tabs>
+      <template v-if="backupView === 'users' || id">
         <p class="dy-muted">
-          数据库和用户图片分别加密备份，需同时保管。恢复会影响全部用户，使用服务器恢复工具并先验证备份。
+          每次同步实际更改的数据会生成一份备份，每位用户保留最近 5 份。下载包含桌面数据和引用的图片。
         </p>
-        <div class="dy-toolbar">
-          <el-button type="primary" @click="job('backup')"
-            >立即创建备份</el-button
-          ><el-button @click="job('asset-migration')"
-            >迁移旧图片到文件存储</el-button
-          >
+        <div v-if="!id" class="dy-toolbar">
+          <AdminSearch v-model="search" placeholder="搜索昵称或账号" @search="submitSearch" />
         </div>
-        <el-table :data="jobs" empty-text="暂无任务"
-          ><el-table-column prop="kind" label="任务" /><el-table-column
-            prop="status"
-            label="状态" /><el-table-column label="创建时间"
+        <el-table
+          v-if="!id"
+          :data="items"
+          v-loading="busy"
+          empty-text="暂无用户"
+        >
+          <el-table-column label="用户" min-width="220"
+            ><template #default="{ row }"
+              ><div class="backup-user">
+                <UserAvatar
+                  :name="row.name || row.subject"
+                  :src="row.picture"
+                /><span>{{ row.name || row.subject }}</span>
+              </div></template
+            ></el-table-column
+          >
+          <el-table-column label="备份数量" width="140"
+            ><template #default="{ row }"
+              >{{ row.backup_count }} / 5</template
+            ></el-table-column
+          >
+          <el-table-column label="最近备份" min-width="180"
+            ><template #default="{ row }">{{
+              row.latest_backup ? date(row.latest_backup) : "尚无数据更新"
+            }}</template></el-table-column
+          >
+          <el-table-column label="操作" min-width="210"
+            ><template #default="{ row }"><RouterLink :to="'/users/' + row.id + '/sync'">同步历史</RouterLink> · <RouterLink :to="'/users/' + row.id + '/conflicts'">冲突记录</RouterLink> · <el-button link @click="router.push('/backups/' + row.id)"
+                >查看备份</el-button
+              ></template
+            ></el-table-column
+          >
+        </el-table>
+        <el-table
+          v-else
+          :data="items"
+          v-loading="busy"
+          empty-text="该用户尚无备份，下一次成功上传数据后自动创建"
+        >
+          <el-table-column label="备份时间" min-width="180"
             ><template #default="{ row }">{{
               date(row.created_at)
             }}</template></el-table-column
-          ><el-table-column prop="error" label="结果说明"
-        /></el-table>
-      </div>
+          >
+          <el-table-column prop="revision" label="数据版本" width="120" />
+          <el-table-column prop="entity_count" label="数据项" width="120" />
+          <el-table-column label="操作" width="120"
+            ><template #default="{ row }"
+              ><a :href="'/api/admin/backups/users/' + id + '/' + row.id"
+                >下载备份</a
+              ></template
+            ></el-table-column
+          >
+        </el-table>
+        <el-pagination
+          v-if="!id && total > 20"
+          v-model:current-page="page"
+          :page-size="20"
+          :total="total"
+          layout="prev,pager,next,total"
+        />
+      </template>
+      <template v-else>
+        <p class="dy-muted">
+          每天北京时间 00:00 自动备份；首次及每隔 7
+          天全量备份，其余为增量备份，最多保留 7
+          条恢复记录。每份下载包含独立恢复所需的全部加密文件块。
+        </p>
+        <div class="dy-toolbar">
+          <el-button type="primary" :disabled="busy" @click="job('backup-full')"
+            >创建全量备份</el-button
+          >
+          <el-button :disabled="busy" @click="job('backup-incremental')"
+            >创建增量备份</el-button
+          >
+        </div>
+        <el-table :data="items" v-loading="busy" empty-text="尚无系统备份">
+          <el-table-column label="类型" width="140"
+            ><template #default="{ row }"
+              ><span class="backup-kind">{{
+                backupKind(row.kind)
+              }}</span></template
+            ></el-table-column
+          >
+          <el-table-column label="备份时间" min-width="180"
+            ><template #default="{ row }">{{
+              date(row.created_at)
+            }}</template></el-table-column
+          >
+          <el-table-column label="完整数据量" min-width="130"
+            ><template #default="{ row }">{{
+              size(row.bytes)
+            }}</template></el-table-column
+          >
+          <el-table-column label="本次新增存储" min-width="140"
+            ><template #default="{ row }">{{
+              size(row.added_bytes)
+            }}</template></el-table-column
+          >
+          <el-table-column label="操作" width="120"
+            ><template #default="{ row }"
+              ><a :href="'/api/admin/backups/system/' + row.id"
+                >下载备份</a
+              ></template
+            ></el-table-column
+          >
+        </el-table>
+        <h3>手动备份任务</h3>
+        <el-table :data="jobs" empty-text="暂无任务">
+          <el-table-column label="类型"
+            ><template #default="{ row }">{{
+              backupKind(row.kind)
+            }}</template></el-table-column
+          >
+          <el-table-column label="状态"
+            ><template #default="{ row }">{{
+              jobStatus[row.status] || row.status
+            }}</template></el-table-column
+          >
+          <el-table-column label="创建时间" min-width="180"
+            ><template #default="{ row }">{{
+              date(row.created_at)
+            }}</template></el-table-column
+          >
+          <el-table-column prop="error" label="说明" />
+        </el-table>
+      </template>
+    </div>
+    <template v-else>
       <div class="dy-panel">
         <p v-if="section === 'templates'">
           <strong>官方默认模板：</strong
@@ -622,39 +857,63 @@ onUnmounted(() =>
           >
         </p>
         <div
-          v-if="catalog || (['users', 'sync'].includes(section) && !id)"
+          v-if="catalog || (section === 'users' && !id)"
           class="dy-toolbar"
         >
-          <el-input
-            v-model="search"
-            placeholder="搜索"
-            clearable
-            @keyup.enter="
-              page = 1;
-              load();
-            "
-          /><el-button
-            @click="
-              page = 1;
-              load();
-            "
-            >查询</el-button
+          <AdminSearch v-model="search" placeholder="搜索" @search="submitSearch" />
+        </div>
+
+        <template v-if="section === 'wallpapers'">
+          <el-tabs
+            v-model="wallpaperStatus"
+            @tab-change="changeWallpaperStatus"
           >
-        </div>
-        <div v-if="section === 'users' && id" class="tabs">
-          <RouterLink :to="'/users/' + id + '/files'">文件</RouterLink
-          ><RouterLink :to="'/users/' + id + '/sync'">同步历史</RouterLink
-          ><RouterLink :to="'/users/' + id + '/conflicts'">冲突记录</RouterLink>
-        </div>
-        <el-table :data="items" v-loading="busy" empty-text="暂无数据"
+            <el-tab-pane label="已发布" name="published" />
+            <el-tab-pane label="未发布" name="draft" />
+            <el-tab-pane label="归档" name="archived" />
+          </el-tabs>
+          <div v-loading="busy" class="wallpaper-cards">
+            <article v-for="row in items" :key="row.id" class="wallpaper-card">
+              <el-image
+                :src="
+                  row.payload?.preview_url ||
+                  (row.payload?.url ? row.payload.url + '?preview=1' : '')
+                "
+                fit="cover"
+                :preview-src-list="row.payload?.url ? [row.payload.url] : []"
+                preview-teleported
+                lazy
+              >
+                <template #error
+                  ><div class="wallpaper-image-empty">暂无预览</div></template
+                >
+              </el-image>
+              <div class="wallpaper-card-info">
+                <h3>{{ row.name }}</h3>
+                <p>{{ row.description || "暂无说明" }}</p>
+                <small>{{ date(row.updated_at) }}</small>
+                <div class="wallpaper-card-actions">
+                  <el-button @click.stop="router.push('/wallpapers/' + row.id)"
+                    >编辑</el-button
+                  >
+                  <el-button type="danger" text @click.stop="remove(row)"
+                    >删除</el-button
+                  >
+                </div>
+              </div>
+            </article>
+          </div>
+          <el-empty v-if="!busy && !items.length" description="暂无壁纸" />
+        </template>
+        <el-table v-else :data="items" v-loading="busy" empty-text="暂无数据"
           ><el-table-column
             label="#"
             type="index"
             :index="(n: number) => (page - 1) * 20 + n + 1"
             width="60"
           />
-          <template v-if="catalog"
-            ><el-table-column
+          <template v-if="catalog">
+            <el-table-column v-if="section==='templates'" label="来源用户" min-width="220"><template #default="{row}"><UserAvatar :src="row.source_user?.picture" :name="row.source_user?.name" :size="28"/> {{ row.source_user?.name || row.payload?.source_account_id || '未指定' }} <small>{{ row.source_user?.email || '未提供邮箱' }}</small></template></el-table-column><el-table-column
               prop="name"
               label="名称"
               min-width="160"
@@ -707,7 +966,7 @@ onUnmounted(() =>
             ></template
           >
           <template
-            v-else-if="(section === 'users' && !id) || section === 'sync'"
+            v-else-if="section === 'users' && !id"
             ><el-table-column label="用户" min-width="180"
               ><template #default="{ row }"
                 ><div class="user-identity">
@@ -758,28 +1017,9 @@ onUnmounted(() =>
               ></el-table-column
             ></template
           >
-          <template v-else-if="section === 'backups'"
-            ><el-table-column
-              prop="name"
-              label="备份文件"
-              min-width="300"
-            /><el-table-column label="大小" width="130"
-              ><template #default="{ row }">{{
-                size(row.bytes)
-              }}</template></el-table-column
-            ><el-table-column label="备份时间" min-width="180"
-              ><template #default="{ row }">{{
-                date(row.modified)
-              }}</template></el-table-column
-            ><el-table-column label="操作" width="100"
-              ><template #default="{ row }"
-                ><a :href="'/api/admin/backups/' + row.name">下载</a></template
-              ></el-table-column
-            ></template
-          >
           <template v-else-if="section === 'audit'"
             ><el-table-column
-              prop="action"
+               :formatter="(row:any) => actionNames[row.action] || row.action"
               label="操作"
               min-width="160"
             /><el-table-column
@@ -892,3 +1132,163 @@ onUnmounted(() =>
     />
   </section>
 </template>
+
+<style scoped>
+.backup-kind {
+  color: #303133;
+  font-weight: 500;
+}
+.backup-user {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.wallpaper-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px;
+  min-height: 80px;
+}
+.wallpaper-card {
+  position: relative;
+  isolation: isolate;
+  border: 0;
+  border-radius: 20px;
+  overflow: hidden;
+  background: #e9ecef;
+  aspect-ratio: 16/9;
+  box-shadow: 0 7px 20px rgb(0 0 0 / 9%);
+}
+.wallpaper-card > .el-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: zoom-in;
+}
+.wallpaper-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    transparent 35%,
+    rgb(0 0 0 / 16%) 58%,
+    rgb(0 0 0 / 70%) 100%
+  );
+}
+.wallpaper-card-info {
+  position: absolute;
+  inset: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  z-index: 1;
+  pointer-events: none;
+  color: #fff;
+}
+.wallpaper-card-info h3 {
+  margin: 0 0 4px;
+  font-size: 17px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: inherit;
+}
+.wallpaper-card-info p {
+  margin: 0 0 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: rgb(255 255 255 / 90%);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wallpaper-card-info small {
+  font-size: 11px;
+  color: rgb(255 255 255 / 72%);
+}
+.wallpaper-card-actions {
+  position: absolute;
+  right: 0;
+  top: 0;
+  display: flex;
+  gap: 8px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  transition:
+    opacity 0.16s,
+    transform 0.16s,
+    visibility 0.16s;
+  pointer-events: auto;
+}
+.wallpaper-card:hover .wallpaper-card-actions,
+.wallpaper-card:focus-within .wallpaper-card-actions {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+.wallpaper-card-actions :deep(.el-button) {
+  margin: 0;
+  border: 0;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 90%);
+  color: #303133;
+  backdrop-filter: blur(12px);
+}
+.wallpaper-card-actions :deep(.el-button--danger) {
+  color: #e34d59;
+}
+@media (hover: none) {
+  .wallpaper-card .wallpaper-card-actions {
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+  }
+}
+.wallpaper-upload {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+.wallpaper-large-preview {
+  width: 100%;
+  height: clamp(240px, 42vh, 520px);
+  background: #f5f5f7;
+  border-radius: 12px;
+  cursor: zoom-in;
+}
+.wallpaper-upload-empty {
+  width: 100%;
+  height: 280px;
+  display: grid;
+  place-items: center;
+  background: #f5f5f7;
+  border-radius: 12px;
+  color: #9096a0;
+}
+.wallpaper-image-empty {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: #9096a0;
+}
+.wallpaper-upload-button input {
+  display: none;
+}
+@media (max-width: 1100px) {
+  .wallpaper-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 600px) {
+  .wallpaper-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+</style>

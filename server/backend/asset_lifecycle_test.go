@@ -29,7 +29,7 @@ func lifecycleImage(t *testing.T, s *Server, sub string) (Identity, string, []by
 }
 func lifecycleUpload(t *testing.T, s *Server, u Identity, hash string, b []byte) {
 	t.Helper()
-	r := httptest.NewRequest("POST", "/v1/assets/"+hash, bytes.NewReader(b))
+	r := httptest.NewRequest("POST", "/api/v1/assets/"+hash, bytes.NewReader(b))
 	r.Header.Set("Content-Type", "image/png")
 	if e := s.assetRoute(httptest.NewRecorder(), r, u); e != nil {
 		t.Fatal(e)

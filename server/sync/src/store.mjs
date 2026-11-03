@@ -1,3 +1,5 @@
+import { readFile, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import { createHash, randomUUID } from "node:crypto";
 export const hash = (value) => createHash("sha256").update(value).digest("hex");
 export const canonical = (value) => JSON.stringify(sort(value));
@@ -43,6 +45,7 @@ const fields = {
     "width",
     "height",
     "widget",
+    "widgetSize",
     "text",
     "name",
     "url",
@@ -52,7 +55,7 @@ const fields = {
     "updatedAt",
   ],
   workspaceSpaces: ["id", "name", "order", "icon"],
-  tabCollections: ["id", "spaceId", "name", "order", "updatedAt"],
+  tabCollections: ["id", "spaceId", "name", "order", "updatedAt", "color"],
   savedTabs: [
     "id",
     "collectionId",
@@ -66,7 +69,7 @@ const fields = {
   shortcuts: ["id"],
   shortcutItems: ["id", "groupId", "position", "name", "url", "icon"],
   preferences: ["id", "value"],
-  wallpapers: ["id", "asset", "sourceUrl", "contentHash"],
+  wallpapers: ["id", "asset", "sourceUrl", "contentHash", "selection"],
 };
 const same = (a, b) => canonical(a ?? null) === canonical(b ?? null);
 export function validateOperation(op) {
@@ -290,7 +293,7 @@ export function validateGraph(rows) {
       throw new ApiError(409, "missing_shortcut_group");
     if (
       r.table === "preferences" &&
-      !["glassMode", "searchEngine", "dockOrder", "wallpaperMode"].includes(
+      !["glassMode", "searchEngine", "dockOrder", "wallpaperMode", "wallpaperSelection", "savedWallpaper:store", "savedWallpaper:upload"].includes(
         p.id,
       ) &&
       !p.id.startsWith("layout:")
@@ -316,9 +319,11 @@ export function validateGraph(rows) {
       }
   }
 }
-export async function applyOperation(pool, account, op) {
-  validateOperation(op);
-  const digest = hash(canonical(op));
+export async function applyOperation(pool, account, op, backup) {
+  if (backup) {
+    if (!uuid.test(op.id) || !uuid.test(op.deviceId) || !uuid.test(backup.id) || !/^(0|[1-9][0-9]*)$/.test(backup.revision)) throw new ApiError(400, "invalid_restore");
+  } else validateOperation(op);
+  const digest = hash(canonical(backup ? { ...op, backup } : op));
   const db = await pool.connect();
   try {
     await db.query("BEGIN");
@@ -359,14 +364,45 @@ export async function applyOperation(pool, account, op) {
         [a.id],
       )
     ).rows;
+    if (backup) {
+      if (String(a.head_revision) !== backup.revision) throw new ApiError(409, "backup_revision_changed");
+      const saved = (await db.query("SELECT snapshot FROM sync_user_backups WHERE account_id=$1 AND id=$2", [a.id, backup.id])).rows[0];
+      if (!saved) throw new ApiError(404, "backup_not_found");
+      const target = new Map(saved.snapshot.entities.filter(e => !e.deleted).map(e => [e.table + ':' + e.id, e]));
+      const current = new Map(rows.map(e => [e.table + ':' + e.id, e]));
+      op = { ...op, changes: [...new Set([...target.keys(), ...current.keys()])].flatMap(key => {
+        const old = current.get(key), next = target.get(key);
+        const base = old && !old.deleted ? old.payload : null, value = next?.payload ?? null;
+        return same(base, value) ? [] : [{ table: (next ?? old).table, id: (next ?? old).id, base, value, revision: old?.revision ?? '0', restore: true }];
+      }) };
+      if (op.changes.length) validateOperation(op);
+      // Backup retention protects the files; restore their database metadata in
+      // the same transaction so a failure never leaves a partial restored graph.
+      for (const [sha, asset] of Object.entries(saved.snapshot.assets ?? {})) {
+        if (!/^[0-9a-f]{64}$/.test(sha)) throw new ApiError(400, "invalid_backup_asset");
+        if (asset.body == null && !(await db.query('SELECT 1 FROM sync_assets WHERE account_id=$1 AND sha256=$2', [a.id, sha])).rowCount) {
+          if (!process.env.ASSET_ROOT) throw new ApiError(409, 'backup_asset_unavailable');
+          try {
+            const path = join(process.env.ASSET_ROOT, a.id, sha);
+            const info = await stat(path);
+            if (!info.isFile() || info.size > 20 * 1048576) throw Error('invalid asset');
+            asset.body = (await readFile(path)).toString('base64');
+          } catch { throw new ApiError(409, 'backup_asset_unavailable'); }
+        }
+        if (asset.body != null && hash(Buffer.from(asset.body, 'base64')) !== sha) throw new ApiError(409, 'backup_asset_corrupt');
+        if (asset.body != null) await db.query(
+          "INSERT INTO sync_assets(account_id,sha256,media_type,body) VALUES($1,$2,$3,$4) ON CONFLICT(account_id,sha256) DO NOTHING",
+          [a.id, sha, asset.media_type, Buffer.from(asset.body, 'base64')]);
+      }
+    }
     const indexed = new Map(rows.map((r) => [r.table + ":" + r.id, r]));
     const updates = [];
     let conflict;
     try {
       for (const c of op.changes) {
         const remote = indexed.get(c.table + ":" + c.id);
-        const merged = merge(c, remote);
-        if (!merged) continue;
+        const merged = backup ? { payload: c.value ?? remote?.payload ?? c.base, deleted: c.value === null } : merge(c, remote);
+        if (!merged || (remote && merged.deleted === remote.deleted && same(merged.payload, remote.payload))) continue;
         const next = {
           table: c.table,
           id: c.id,
@@ -397,6 +433,7 @@ export async function applyOperation(pool, account, op) {
       if (e.status !== 409) throw e;
       conflict = e.code;
     }
+    if (backup && conflict) throw new ApiError(409, conflict);
     let result;
     if (conflict) {
       result = {
@@ -414,6 +451,8 @@ export async function applyOperation(pool, account, op) {
           JSON.stringify({ code: conflict, changes: op.changes }),
         ],
       );
+    } else if (!updates.length) {
+      result = { status: "applied", revision: a.head_revision, changes: [], epoch };
     } else {
       const revision = (BigInt(a.head_revision) + 1n).toString();
       for (const u of updates) {

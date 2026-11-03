@@ -193,27 +193,60 @@ func TestSignedExtensionIdentityAndPrivateFiles(t *testing.T) {
 		s.handler(w, r)
 		return w
 	}
-	r := call("GET", "/v1/catalog/widgets", ordinary, "ordinary", nil)
+	r := call("GET", "/api/v1/catalog/widgets", ordinary, "ordinary", nil)
 	if r.Code != 200 {
 		t.Fatal("valid signed extension session failed", r.Body.String())
 	}
 	for _, identity := range []string{wrongAudience, admin, ordinary + "tampered"} {
-		r = call("GET", "/v1/catalog/widgets", identity, "ordinary", nil)
+		r = call("GET", "/api/v1/catalog/widgets", identity, "ordinary", nil)
 		if r.Code != 401 {
 			t.Fatal("invalid identity accepted", r.Body.String())
 		}
 	}
+	uid := accountID(s.cfg.Issuer, "ordinary")
+	for n := 1; n <= 6; n++ {
+		if _, err := s.db.Exec(context.Background(), "SELECT sync_capture_user_backup($1,$2)", uid, n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		identity, access string
+		count            int
+	}{{ordinary, "ordinary", 5}, {admin, "admin", 0}} {
+		r := call("GET", "/api/v1/sync/backups", tc.identity, tc.access, nil)
+		var result struct {
+			Backups []struct {
+				Revision string `json:"revision"`
+			} `json:"backups"`
+		}
+		if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &result) != nil || result.Backups == nil || len(result.Backups) != tc.count {
+			t.Fatal("account backup list", r.Code, r.Body.String())
+		}
+		if tc.count > 0 && result.Backups[0].Revision != "6" {
+			t.Fatal("backup order", result.Backups)
+		}
+	}
+	for n := 1; n <= 2; n++ {
+		r = call("POST", "/api/v1/sync/backups", admin, "admin", nil)
+		var backup struct {
+			ID       string
+			Revision string
+		}
+		if r.Code != 201 || json.Unmarshal(r.Body.Bytes(), &backup) != nil || backup.ID == "" || backup.Revision != fmt.Sprint(n) {
+			t.Fatal("manual backup of unchanged account", r.Code, r.Body.String())
+		}
+	}
 	png := []byte{137, 80, 78, 71, 13, 10, 26, 10}
 	hash := digest(string(png))
-	r = call("POST", "/v1/assets/"+hash, ordinary, "ordinary", png)
+	r = call("POST", "/api/v1/assets/"+hash, ordinary, "ordinary", png)
 	if r.Code != 200 {
 		t.Fatal("signed upload failed", r.Body.String())
 	}
-	r = call("GET", "/v1/assets/"+hash, ordinary, "ordinary", nil)
+	r = call("GET", "/api/v1/assets/"+hash, ordinary, "ordinary", nil)
 	if r.Code != 200 || !bytes.Equal(r.Body.Bytes(), png) {
 		t.Fatal("signed file read failed")
 	}
-	r = call("GET", "/v1/assets/"+hash, admin, "admin", nil)
+	r = call("GET", "/api/v1/assets/"+hash, admin, "admin", nil)
 	if r.Code != 404 {
 		t.Fatal("private file leaked across users")
 	}
@@ -222,6 +255,38 @@ func TestSignedExtensionIdentityAndPrivateFiles(t *testing.T) {
 		t.Fatal("extension bearer bypassed administrator cookie boundary")
 	}
 }
+func TestCatalogStatusFilter(t *testing.T) {
+	s := testServer(t)
+	admin := loginCookie(t, s, "trusted-super", "admin")
+	for _, status := range []string{"published", "draft", "archived"} {
+		_, err := s.db.Exec(context.Background(), "INSERT INTO backend_catalog(kind,name,status,payload) VALUES('wallpapers',$1,$2,'{}')", "wallpaper-"+status, status)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, status := range []string{"published", "draft", "archived"} {
+		r := callAdmin(s, admin, "GET", "catalog/wallpapers?status="+status, "", false)
+		var result struct {
+			Items []struct {
+				Status string `json:"status"`
+			} `json:"items"`
+		}
+		if r.Code != 200 {
+			t.Fatal(r.Body.String())
+		}
+		if err := json.Unmarshal(r.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Items) != 1 || result.Items[0].Status != status {
+			t.Fatalf("filter %s: %s", status, r.Body.String())
+		}
+	}
+	r := callAdmin(s, admin, "GET", "catalog/wallpapers?status=invalid", "", false)
+	if r.Code != 400 {
+		t.Fatal("invalid status accepted")
+	}
+}
+
 func TestCatalogVersions(t *testing.T) {
 	s := testServer(t)
 	admin := loginCookie(t, s, "trusted-super", "admin")
@@ -262,7 +327,7 @@ func TestFilesQuotaIsolationAndMigration(t *testing.T) {
 	hash := hex.EncodeToString(sum[:])
 	upload := func(data []byte) error {
 		sum := sha256.Sum256(data)
-		r := httptest.NewRequest("POST", "/v1/assets/"+hex.EncodeToString(sum[:]), bytes.NewReader(data))
+		r := httptest.NewRequest("POST", "/api/v1/assets/"+hex.EncodeToString(sum[:]), bytes.NewReader(data))
 		r.Header.Set("Content-Type", "image/png")
 		return s.assetRoute(httptest.NewRecorder(), r, u)
 	}
@@ -491,7 +556,7 @@ func TestAdminQuotaModesAndPreview(t *testing.T) {
 	png, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jF7sAAAAASUVORK5CYII=")
 	sum := sha256.Sum256(png)
 	hash := hex.EncodeToString(sum[:])
-	request := httptest.NewRequest("POST", "/v1/assets/"+hash, bytes.NewReader(png))
+	request := httptest.NewRequest("POST", "/api/v1/assets/"+hash, bytes.NewReader(png))
 	request.Header.Set("Content-Type", "image/png")
 	if e := s.assetRoute(httptest.NewRecorder(), request, u); e != nil {
 		t.Fatal(e)

@@ -39,6 +39,9 @@ func newUUID() string {
 }
 func (s *Server) captureTemplate(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
+		ID          string `json:"id"`
+		Version     int64  `json:"version"`
+		Status      string `json:"status"`
 		Account     string `json:"account_id"`
 		Name        string `json:"name"`
 		Description string `json:"description"`
@@ -127,7 +130,17 @@ func (s *Server) captureTemplate(w http.ResponseWriter, r *http.Request) error {
 	}
 	data, _ := json.Marshal(snap)
 	var id string
-	e = s.db.QueryRow(r.Context(), "INSERT INTO backend_catalog(kind,name,status,payload,description) VALUES('templates',$1,'draft',$2,$3) RETURNING id::text", in.Name, data, in.Description).Scan(&id)
+	if in.ID != "" {
+		if !uuidPattern.MatchString(in.ID) || (in.Status != "draft" && in.Status != "published" && in.Status != "archived") {
+			return fail(400, "无效模板")
+		}
+		err := s.db.QueryRow(r.Context(), "UPDATE backend_catalog SET name=$2,description=$3,payload=$4,status=$5,version=version+1,updated_at=now() WHERE id=$1 AND kind='templates' AND version=$6 AND ($5='published' OR NOT EXISTS(SELECT 1 FROM backend_settings WHERE id='default_template_id' AND value#>>'{}'=$1::text)) RETURNING id::text", in.ID, in.Name, in.Description, data, in.Status, in.Version).Scan(&id)
+		if err != nil {
+			return fail(409, "模板已变更或为官方默认模板")
+		}
+	} else {
+		e = s.db.QueryRow(r.Context(), "INSERT INTO backend_catalog(kind,name,status,payload,description) VALUES('templates',$1,'draft',$2,$3) RETURNING id::text", in.Name, data, in.Description).Scan(&id)
+	}
 	if e != nil {
 		return e
 	}

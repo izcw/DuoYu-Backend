@@ -78,10 +78,10 @@ export async function createAuthenticator(config, dependencies = {}) {
     };
   };
 }
-export function createSyncServer({ pool, authenticate, origins }) {
+export function createSyncServer({ pool, authenticate, origins, clock = Date.now }) {
   const rates = new Map();
   function limit(key, max = 240) {
-    const now = Date.now();
+    const now = clock();
     if (rates.size > 10000)
       for (const [k, v] of rates) if (v.until < now) rates.delete(k);
     const v = rates.get(key);
@@ -133,7 +133,22 @@ export function createSyncServer({ pool, authenticate, origins }) {
         }
         return Buffer.concat(chunks);
       }
-      if (req.method === 'GET' && url.pathname === '/v1/sync/conflicts') {
+      if (req.method === 'GET' && url.pathname === '/api/v1/sync/backups') {
+        const result = await scopedQuery(pool, account.id,
+          "SELECT id::text,revision::text,epoch::text,created_at,jsonb_array_length(snapshot->'entities') AS entity_count FROM sync_user_backups WHERE account_id=$1 ORDER BY created_at DESC,id DESC LIMIT 5", [account.id]);
+        return send(200, { backups: result.rows });
+      }
+      const restore = /^\/api\/v1\/sync\/backups\/([0-9a-f-]{36})\/restore$/.exec(url.pathname);
+      if (req.method === 'POST' && restore) {
+        if (!req.headers['content-type']?.startsWith('application/json')) throw new ApiError(415, 'json_required');
+        let input;
+        try { input = JSON.parse((await body(4096)).toString()); } catch { throw new ApiError(400, 'invalid_json'); }
+        if (!input || typeof input !== 'object') throw new ApiError(400, 'invalid_json');
+        return send(200, await applyOperation(pool, account,
+          { id: input.id, deviceId: input.deviceId, epoch: input.epoch },
+          { id: restore[1], revision: input.revision }));
+      }
+      if (req.method === 'GET' && url.pathname === '/api/v1/sync/conflicts') {
         const rows = (
           await scopedQuery(
             pool,
@@ -144,7 +159,7 @@ export function createSyncServer({ pool, authenticate, origins }) {
         ).rows;
         return send(200, { conflicts: rows });
       }
-      const resolve = /^\/v1\/sync\/conflicts\/([0-9a-f-]{36})\/resolve$/.exec(
+      const resolve = /^\/api\/v1\/sync\/conflicts\/([0-9a-f-]{36})\/resolve$/.exec(
         url.pathname,
       );
       if (req.method === 'POST' && resolve) {
@@ -156,7 +171,7 @@ export function createSyncServer({ pool, authenticate, origins }) {
         );
         return send(200, { resolved: true });
       }
-      if (req.method === 'POST' && url.pathname === '/v1/sync/operations') {
+      if (req.method === 'POST' && url.pathname === '/api/v1/sync/operations') {
         if (!req.headers['content-type']?.startsWith('application/json'))
           throw new ApiError(415, 'json_required');
         let op;
@@ -170,7 +185,7 @@ export function createSyncServer({ pool, authenticate, origins }) {
       }
       if (
         req.method === 'GET' &&
-        ['/v1/sync/snapshot', '/v1/sync/changes'].includes(url.pathname)
+        ['/api/v1/sync/snapshot', '/api/v1/sync/changes'].includes(url.pathname)
       ) {
         const db = await pool.connect();
         try {
@@ -236,8 +251,8 @@ export function createSyncServer({ pool, authenticate, origins }) {
           db.release();
         }
       }
-      if (url.pathname.startsWith('/v1/assets/')) {
-        const sha = url.pathname.slice('/v1/assets/'.length);
+      if (url.pathname.startsWith('/api/v1/assets/')) {
+        const sha = url.pathname.slice('/api/v1/assets/'.length);
         if (!/^[0-9a-f]{64}$/.test(sha))
           throw new ApiError(400, 'invalid_hash');
         if (req.method === 'POST') {
