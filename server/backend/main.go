@@ -205,6 +205,10 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 			e = s.websiteMetadata(w, r)
 			break
 		}
+		if r.URL.Path == "/api/v1/guest-template" || strings.HasPrefix(r.URL.Path, "/api/v1/guest-template/assets/") {
+			e = s.guestTemplate(w, r)
+			break
+		}
 		var u Identity
 		u, e = s.authenticate(r)
 		if e != nil {
