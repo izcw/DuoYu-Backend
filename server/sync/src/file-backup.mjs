@@ -2,9 +2,8 @@ import {
   createCipheriv,
   createDecipheriv,
   randomBytes,
-  randomUUID,
 } from 'node:crypto';
-import { open, readFile, writeFile, unlink, mkdir } from 'node:fs/promises';
+import { open, readFile, writeFile, unlink, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -13,35 +12,44 @@ const run = promisify(execFile);
 export async function createFileBackup(file, key, root) {
   await mkdir(root, { recursive: true, mode: 0o700 });
   const nonce = randomBytes(12),
-    cipher = createCipheriv('aes-256-gcm', key, nonce),
-    out = createWriteStream(file, { flags: 'wx', mode: 0o600 });
-  out.write(Buffer.concat([Buffer.from('DYA1'), nonce]));
-  const child = spawn(
-    'tar',
-    ['--exclude=./*/.upload-*', '-cf', '-', '-C', root, '.'],
-    { stdio: ['ignore', 'pipe', 'ignore'] },
-  );
-  const done = new Promise((resolve, reject) => {
-    child.on('error', reject);
-    child.on('exit', (c) =>
-      c === 0 ? resolve() : reject(Error('Asset archive failed')),
-    );
-  });
+    cipher = createCipheriv('aes-256-gcm', key, nonce);
+  // Establish ownership before cleanup is allowed to remove the destination.
+  // A failed exclusive open must never delete somebody else's recovery point.
+  const destination = await open(file, 'wx', 0o600);
+  const out = destination.createWriteStream();
+  let child, done, streaming;
   try {
-    await Promise.all([pipeline(child.stdout, cipher, out), done]);
+    out.write(Buffer.concat([Buffer.from('DYA1'), nonce]));
+    child = spawn(
+      'tar',
+      ['--exclude=./*/.upload-*', '-cf', '-', '-C', root, '.'],
+      { stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    done = new Promise((resolve, reject) => {
+      child.on('error', reject);
+      child.on('close', (c) =>
+        c === 0 ? resolve() : reject(Error('Asset archive failed')),
+      );
+    });
+    streaming = pipeline(child.stdout, cipher, out);
+    await Promise.all([streaming, done]);
     await writeFile(file, cipher.getAuthTag(), { flag: 'a', mode: 0o600 });
   } catch (e) {
-    child.kill();
+    child?.kill();
+    out.destroy();
+    await Promise.allSettled([streaming, done]);
+    await destination.close();
     await unlink(file).catch(() => {});
     throw e;
   }
 }
 export async function verifyFileBackup(file, key, temp) {
   const f = await open(file, 'r');
-  const size = (await f.stat()).size;
+  let size;
   const head = Buffer.alloc(16),
     tag = Buffer.alloc(16);
   try {
+    size = (await f.stat()).size;
     if (size < 33) throw Error('Invalid archive');
     await f.read(head, 0, 16, 0);
     await f.read(tag, 0, 16, size - 16);
@@ -78,7 +86,8 @@ export async function verifyFileBackup(file, key, temp) {
     throw Error('Archive links are forbidden');
 }
 export async function restoreFileBackup(file, key, root, dry = true) {
-  const temp = '/www/backup/duoyu-sync/.assets-' + randomUUID() + '.tar';
+  const stage = await mkdtemp('/www/backup/duoyu-sync/.assets-');
+  const temp = stage + '/verified.tar';
   try {
     await verifyFileBackup(file, key, temp);
     if (!dry) {
@@ -94,6 +103,6 @@ export async function restoreFileBackup(file, key, root, dry = true) {
       await run('chown', ['-R', 'duoyu-backend:duoyu-backend', root]);
     }
   } finally {
-    await unlink(temp).catch(() => {});
+    await rm(stage, { recursive: true, force: true });
   }
 }

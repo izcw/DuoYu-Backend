@@ -53,6 +53,9 @@ const jobStatus: Record<string, string> = {
 };
 const backupView = ref("users");
 function changeBackupView() {
+  items.value = [];
+  total.value = 0;
+  jobs.value = [];
   if (id.value) {
     void router.push("/backups");
     return;
@@ -129,11 +132,22 @@ function submitSearch() {
   else page.value = 1;
 }
 let loadSeq = 0;
+let uploadSeq = 0;
+let disposed = false;
+function currentContext() {
+  const seq = loadSeq, path = route.fullPath;
+  return () => !disposed && seq === loadSeq && path === route.fullPath;
+}
 async function load() {
-  const seq = ++loadSeq;
+  loadSeq++;
+  const current = currentContext();
+  uploadSeq++;
+  releaseUploadPreview();
   busy.value = true;
   error.value = "";
   dirty.value = false;
+  form.value = {};
+  configText.value = "{}";
   try {
     let path = section.value;
     if (section.value === "backups")
@@ -157,7 +171,7 @@ async function load() {
       };
       if (section.value === "templates") {
         const result = await api("users");
-        if (seq !== loadSeq) return;
+        if (!current()) return;
         sourceUsers.value = result.items;
       }
       configText.value = JSON.stringify(
@@ -187,7 +201,7 @@ async function load() {
           ? "&status=" + wallpaperStatus.value
           : ""),
     );
-    if (seq !== loadSeq) return;
+    if (!current()) return;
     items.value = result.items || [];
     total.value = Number(items.value[0]?.total || items.value.length);
     if (catalog.value && id.value) {
@@ -218,20 +232,22 @@ async function load() {
           items.value.find((r) => r.id === "storage_quota_bytes")?.value ||
             104857600,
         ) / 1048576;
-    if (section.value === "templates" && !id.value)
-      defaultTemplate.value =
-        (await api("settings")).items.find(
+    if (section.value === "templates" && !id.value) {
+      const settings = await api("settings");
+      if (!current()) return;
+      defaultTemplate.value = settings.items.find(
           (x: any) => x.id === "default_template_id",
         )?.value || "";
+    }
     if (section.value === "backups" && !id.value && backupView.value === "system") {
       const result = await api("jobs");
-      if (seq === loadSeq) jobs.value = result.items;
+      if (current()) jobs.value = result.items;
     }
   } catch (e) {
-    if (seq === loadSeq)
+    if (current())
       error.value = e instanceof Error ? e.message : String(e);
   } finally {
-    if (seq === loadSeq) busy.value = false;
+    if (current()) busy.value = false;
   }
 }
 watch(
@@ -264,6 +280,9 @@ async function canLeave() {
 onBeforeRouteLeave(canLeave);
 onBeforeRouteUpdate(canLeave);
 async function save() {
+  if (busy.value || error.value) return;
+  const current = currentContext();
+  const returnPath = "/" + section.value;
   busy.value = true;
   try {
     if (section.value === "templates" && (id.value === "new" || form.value.source !== form.value.payload?.source_account_id)) {
@@ -273,6 +292,7 @@ async function save() {
         name: form.value.name,
         description: form.value.description,
       });
+      if (!current()) return;
       dirty.value = false;
       ElMessage.success("用户数据快照已保存");
       await router.push("/templates/" + result.id);
@@ -296,29 +316,32 @@ async function save() {
         version: Number(form.value.version),
       },
     );
+    if (!current()) return;
     dirty.value = false;
     ElMessage.success("已保存");
-    await router.push("/" + section.value);
+    await router.push(returnPath);
   } catch (e) {
-    ElMessage.error(String(e));
+    if (current()) ElMessage.error(String(e));
   } finally {
-    busy.value = false;
+    if (current()) busy.value = false;
   }
 }
 let sourceSearch = 0;
 async function findUsers(q: string) {
   const request = ++sourceSearch, path = route.fullPath;
+  const current = currentContext();
   try {
     const result = await api("users?q=" + encodeURIComponent(q));
-    if (request !== sourceSearch || route.fullPath !== path) return;
+    if (!current() || request !== sourceSearch || route.fullPath !== path) return;
     const selected = sourceUsers.value.find(user => user.id === form.value.source);
     sourceUsers.value = selected && !result.items.some((user:any) => user.id === selected.id)
       ? [selected, ...result.items] : result.items;
   } catch (e) {
-    if (request === sourceSearch && route.fullPath === path) ElMessage.error(String(e));
+    if (current() && request === sourceSearch && route.fullPath === path) ElMessage.error(String(e));
   }
 }
 async function setDefault(row?: any) {
+  const current = currentContext();
   try {
     await ElMessageBox.confirm(
       row
@@ -326,37 +349,45 @@ async function setDefault(row?: any) {
         : "取消新用户默认模板？",
       "官方默认模板",
     );
+    if (!current()) return;
     await api("templates/default", { id: row?.id || "" });
+    if (!current()) return;
     ElMessage.success("已更新官方默认模板");
     await load();
   } catch (e) {
-    if (e !== "cancel" && e !== "close") ElMessage.error(String(e));
+    if (current() && e !== "cancel" && e !== "close") ElMessage.error(String(e));
   }
 }
 async function remove(row: any) {
+  const current = currentContext();
+  const target = "catalog/" + section.value + "/" + row.id + "?version=" + row.version;
   try {
     await ElMessageBox.confirm(
       "确认删除「" + row.name + "」？已导入用户桌面的内容不受影响。",
       "删除资源",
       { type: "warning" },
     );
+    if (!current()) return;
     await api(
-      "catalog/" + section.value + "/" + row.id + "?version=" + row.version,
+      target,
       undefined,
       "DELETE",
     );
+    if (!current()) return;
     ElMessage.success("已删除");
     await load();
   } catch (e) {
-    if (e !== "cancel" && e !== "close") ElMessage.error(String(e));
+    if (current() && e !== "cancel" && e !== "close") ElMessage.error(String(e));
   }
 }
 async function userSettings(row: any) {
   await router.push("/users/" + row.id + "/settings");
 }
 async function deleteUserFile(row: any) {
+  const current = currentContext();
   const force =
     Number(row.reference_count || 0) > 0 || Number(row.conflict_count || 0) > 0;
+  const target = previewUrl(row).slice("/api/admin/".length) + (force ? "?force=true" : "");
   try {
     await ElMessageBox.confirm(
       force
@@ -365,20 +396,23 @@ async function deleteUserFile(row: any) {
       "删除用户图片",
       { type: "warning", confirmButtonText: "确认删除" },
     );
+    if (!current()) return;
     await api(
-      previewUrl(row).slice("/api/admin/".length) +
-        (force ? "?force=true" : ""),
+      target,
       undefined,
       "DELETE",
     );
+    if (!current()) return;
     previewFile.value = null;
     ElMessage.success("已删除，正在清理存储文件");
     await load();
   } catch (e) {
-    if (e !== "cancel" && e !== "close") ElMessage.error(String(e));
+    if (current() && e !== "cancel" && e !== "close") ElMessage.error(String(e));
   }
 }
 async function saveUser() {
+  if (busy.value || error.value) return;
+  const current = currentContext();
   if (
     error.value ||
     (!inheritQuota.value &&
@@ -395,39 +429,48 @@ async function saveUser() {
       disabled: !!form.value.disabled,
       quota_mb: inheritQuota.value ? null : Number(form.value.quota_mb),
     });
+    if (!current()) return;
     dirty.value = false;
     ElMessage.success("已更新");
     await router.push("/users");
   } catch (e) {
-    ElMessage.error(String(e));
+    if (current()) ElMessage.error(String(e));
   } finally {
-    busy.value = false;
+    if (current()) busy.value = false;
   }
 }
 async function saveSettings() {
+  if (busy.value || error.value) return;
+  const current = currentContext();
   busy.value = true;
   try {
     await api("settings", { quota_mb: quotaMB.value });
+    if (!current()) return;
     dirty.value = false;
     ElMessage.success("默认配额已更新");
   } catch (e) {
-    ElMessage.error(String(e));
+    if (current()) ElMessage.error(String(e));
   } finally {
-    busy.value = false;
+    if (current()) busy.value = false;
   }
 }
 async function job(kind: string) {
+  const current = currentContext();
   try {
     await api("jobs", { kind });
+    if (!current()) return;
     ElMessage.success("任务已排队");
     await load();
   } catch (e) {
-    ElMessage.error(String(e));
+    if (current()) ElMessage.error(String(e));
   }
 }
 async function upload(event: Event) {
+  if (busy.value || error.value) return;
   const file = (event.target as HTMLInputElement).files?.[0];
   if (!file) return;
+  const context = currentContext(), sequence = ++uploadSeq;
+  const current = () => context() && sequence === uploadSeq;
   releaseUploadPreview();
   uploadPreview.value = URL.createObjectURL(file);
   busy.value = true;
@@ -438,6 +481,7 @@ async function upload(event: Event) {
       body: file,
     });
     const data = await r.json();
+    if (!current()) return;
     if (!r.ok) throw Error(data.error);
     const cfg = JSON.parse(configText.value);
     cfg.url = data.url;
@@ -446,14 +490,20 @@ async function upload(event: Event) {
     dirty.value = true;
     ElMessage.success("图片已上传");
   } catch (e) {
+    if (!current()) return;
     releaseUploadPreview();
     ElMessage.error(String(e));
   } finally {
-    busy.value = false;
+    if (current()) busy.value = false;
     (event.target as HTMLInputElement).value = "";
   }
 }
-onUnmounted(releaseUploadPreview);
+onUnmounted(() => {
+  disposed = true;
+  loadSeq++;
+  uploadSeq++;
+  releaseUploadPreview();
+});
 async function refreshPage() {
   if (await canLeave()) await load();
 }
@@ -508,7 +558,7 @@ onUnmounted(() =>
       show-icon
     />
     <div v-if="catalog && id" class="dy-panel">
-      <el-form class="dy-form" label-position="top" @input="dirty = true"
+      <el-form class="dy-form" label-position="top" :disabled="busy" @input="dirty = true"
         ><el-form-item label="名称"
           ><el-input v-model="form.name" maxlength="100" /></el-form-item
         ><el-form-item
@@ -592,7 +642,7 @@ onUnmounted(() =>
           }}
         </p>
         <div class="dy-form-footer">
-          <el-button type="primary" :loading="busy" @click="save"
+          <el-button type="primary" :loading="busy" :disabled="!!error" @click="save"
             >保存</el-button
           ><el-button @click="router.push('/' + section)">取消</el-button>
         </div></el-form
@@ -600,7 +650,7 @@ onUnmounted(() =>
     </div>
     <div v-else-if="section === 'settings'" class="dy-panel">
       <h2>用户默认文件配额</h2>
-      <el-form class="dy-form" label-position="top"
+      <el-form class="dy-form" label-position="top" :disabled="busy"
         ><el-form-item label="每用户容量（MB）"
           ><el-input-number
             v-model="quotaMB"
@@ -613,7 +663,7 @@ onUnmounted(() =>
           默认
           100MB。单独配置的用户沿用个人配额；调低配额不删除已有文件，超限后暂停新增上传。
         </p>
-        <el-button type="primary" :loading="busy" @click="saveSettings"
+        <el-button type="primary" :loading="busy" :disabled="!!error" @click="saveSettings"
           >保存配置</el-button
         ></el-form
       ><el-divider />
@@ -638,7 +688,7 @@ onUnmounted(() =>
           <p class="dy-muted">{{ id }}</p>
         </div>
       </div>
-      <el-form class="dy-form quota-form" label-position="top" v-loading="busy">
+      <el-form class="dy-form quota-form" label-position="top" :disabled="busy" v-loading="busy">
         <el-form-item label="项目访问"
           ><el-switch
             v-model="form.disabled"

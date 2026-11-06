@@ -2,7 +2,7 @@
 
 # 多鱼业务后端与管理端
 
-参考 DuoYu-ID：Go 1.27、net/http、pgx、PostgreSQL；管理端 Vue 3、Vue Router、Element Plus、ECharts、Vite、pnpm。管理界面沿用白底、黑色主按钮、独立编辑路由的风格。账号中心项目未修改源码，也不保存本项目业务数据。
+技术栈：Go 1.27、net/http、pgx、PostgreSQL；管理端 Vue 3、Vue Router、Element Plus、ECharts、Vite、pnpm。管理界面沿用白底、黑色主按钮、独立编辑路由的风格。账号中心负责统一身份，本项目业务数据保留在业务库。
 
 ## 入口和职责
 
@@ -38,6 +38,10 @@
 
 用户请求使用幂等 ID，应用结果进入正常同步修订日志，其他设备照常拉取。资源目录响应不泄露来源账号或快照正文。正在使用的默认模板不能直接删除、归档或下架，应先切换或取消默认。
 
+默认模板的选择、归档、删除、快照更新和默认配额调整在 PostgreSQL 事务内进行。冲突操作按提交顺序重新校验，先完成的操作生效，另一操作会得到相应的状态或配额提示。新账号首次应用默认模板时会读取一致的配置。
+
+管理端提交维护任务时，同一种任务处于排队或运行状态会返回 HTTP 409，终止后可再次提交。不同类型可分别排队。入队记录与创建审计记录同时提交。数据库故障返回 HTTP 500，故障消除后可重试。
+
 扩展组件商店新增“已发布组件”“页面模板”，壁纸商店新增“精选壁纸”。组件目录仅配置扩展内置 calendar/weather/note 类型，不下载执行远程 JavaScript；新增组件实现仍需发布扩展更新。
 
 ## 概览、备份和审计
@@ -46,14 +50,14 @@
 
 “立即创建备份”排入数据库任务，单工作进程使用 advisory lock 领取。后端系统用户只能通过一条固定 sudoers 命令启动现有备份 unit，不能提交任意 shell。服务代码、unit 和 sudoers 均由 root 拥有，业务服务无权修改。任务中断显示失败，不能把不确定状态标为成功。
 
-每次备份成对生成：
+当前备份使用 v2 加密分块和独立可恢复的 manifest，支持全量与增量，默认保留7个恢复点；定时器为北京时间00:00，具体部署以项目根目录 README 和实际 unit 为准。仍需安排异地副本。旧版备份兼容以下成对文件：
 
 - `sync-时间.dump.enc`：PostgreSQL 自定义格式备份，DYS1 / AES-256-GCM。
 - `sync-时间.assets.tar.enc`：完整用户/目录图片树，DYA1 / AES-256-GCM。
 
-数据库先取快照，随后归档只增不删的内容寻址文件，图片归档可包含额外未引用文件，避免缺失数据库所引用的文件。两者应成对保存；管理员可下载加密文件，解密密钥不提供给网页。每日03:30自动备份、保留14天；仍需另行安排异地副本。
+数据库快照和文件复制期间持有与物理回收共享的 advisory lock，避免备份跨越物理删除。管理员可下载加密备份，解密密钥不提供给网页。旧版两文件应成对保存。
 
-恢复只在服务器执行，避免浏览器误触影响全部账号：
+恢复只在服务器由管理员显式执行，不由网页触发。v2 使用 `restore-system.mjs --id <备份ID> --dry-run`，正式恢复还需 `--confirm duoyu_extensions`；以下命令仅针对旧版文件：
 
 ```sh
 node /www/wwwroot/duoyu-sync/src/restore.mjs --backup /www/backup/duoyu-sync/sync-时间.dump.enc --dry-run
@@ -74,10 +78,8 @@ node /www/wwwroot/duoyu-sync/src/restore.mjs --backup /www/backup/duoyu-sync/syn
 pnpm --dir admin install --frozen-lockfile
 pnpm --dir admin build
 node scripts/admin-ui.mjs
-pnpm typecheck
-pnpm build
-pnpm test:cloud:server
-pnpm test:cloud:integration
+pnpm --dir admin typecheck
+pnpm --dir server/sync test
 
 cd server/backend
 $env:BACKEND_TEST_DATABASE_URL='postgres://duoyu:duoyu_dev_only@127.0.0.1:55432/duoyu_sync_test'
@@ -86,9 +88,13 @@ go test -v ./...
 
 Go 不在 PATH 时可使用本机临时工具链 `$env:TEMP/duoyu-go-runtime/go/bin/go.exe`。后端集成测试只接受本机55432专用测试库，每次创建隔离 schema 后删除，不能指向生产。覆盖超级管理员/普通用户边界、CSRF、旧版本更新拒绝、并发文件配额、跨用户文件隔离、旧图片迁移、用户快照、默认模板并发一次初始化及手动应用幂等。浏览器测试使用模拟身份和接口，覆盖1440px、390px、图表、从用户创建模板和设置默认；公网只检查入口和授权跳转，不代替用户登录或发邮件。
 
+完整跨端隔离浏览器入口在扩展仓库：`node scripts/auth-isolated.mjs --id-pages --admin-pages --id-security`，需要 `GO_BINARY` 和指向本机专用测试库的 `DUOYU_TEST_DATABASE_URL`。它构建并启动实际身份/业务服务，覆盖真实登录、同步及代表性管理写操作，不启动真实邮件 worker。证据以该次运行的结果文件与清理状态为准。
+
+收到停止信号后，业务 Go 服务先关闭监听，等待在途 HTTP 请求完成（15秒宽限期）；超时明确关闭连接并报告错误。随后等待后台任务退出，再释放数据库连接池。`TestServeHTTP*` 验证本机真实 HTTP 的排空、超时和监听失败；这不替代部署环境的进程信号和外部备份任务停机演练。
+
 ## 当前边界
 
 - 自动同步仍由扩展打开的新标签页调度，全部关闭后下次打开继续。
 - 本机文件系统是单机部署；多节点部署需共享受控文件系统或改为对象存储。
-- 暂不自动删除未引用的旧文件、模板图片和历史修订；这样可支持一致备份及恢复，需后续增加带保留期和引用扫描的回收任务。当前配额统计为用户已登记文件，不包含官方共享目录。
-- 本次执行备份完整性 dry-run，未对生产执行破坏性的完整恢复，也未代替8888888888账号完成真实交互登录。
+- 用户文件已有引用核对、删除队列和24小时宽限的孤立文件回收，保留用户备份引用；官方目录资源与历史修订不等同于用户文件回收范围。当前配额统计为用户已登记文件，不包含官方共享目录。
+- 本地验证不代表生产恢复演练。不要依据测试通过直接执行上述正式恢复命令。

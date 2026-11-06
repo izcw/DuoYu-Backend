@@ -1,7 +1,7 @@
 // Recovery stays an explicit, root-only operational action, never an HTTP restore.
-import { readFile, mkdir, rm, unlink, writeFile } from "node:fs/promises";
+import { open, readFile, mkdir, rm, unlink, writeFile } from "node:fs/promises";
 import { randomBytes, randomUUID, createCipheriv } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -25,17 +25,20 @@ const dir = "/www/backup/duoyu-sync",
   key = await readFile("/www/server/duoyu-sync-backup.key");
 const stage = dir + "/.restore-" + randomUUID(),
   release = await lockAssetCollection();
-const file =
-  dir + "/sync-" + new Date().toISOString().replaceAll(":", "-") + ".dump.enc";
+const file = dir + "/sync-restore-" + randomUUID() + ".dump.enc";
+let stageOwned = false, fileOwned = false, assetsOwned = false;
 try {
   await restoreSnapshot(dir, key, id, stage);
+  stageOwned = true;
   await run("/www/server/pgsql/bin/pg_restore", [
     "--list",
     stage + "/database.dump",
   ]);
   const nonce = randomBytes(12),
-    cipher = createCipheriv("aes-256-gcm", key, nonce),
-    out = createWriteStream(file, { flags: "wx", mode: 0o600 });
+    cipher = createCipheriv("aes-256-gcm", key, nonce);
+  const destination = await open(file, "wx", 0o600);
+  fileOwned = true;
+  const out = destination.createWriteStream();
   out.write(Buffer.concat([Buffer.from("DYS1"), nonce]));
   await pipeline(createReadStream(stage + "/database.dump"), cipher, out);
   await writeFile(file, cipher.getAuthTag(), { flag: "a" });
@@ -45,6 +48,7 @@ try {
     key,
     stage + "/users",
   );
+  assetsOwned = true;
   // Release before the existing recovery program starts maintenance and rotates the epoch.
   await release();
   const result = await run(
@@ -60,7 +64,7 @@ try {
   process.stdout.write(result.stdout);
 } finally {
   await release().catch(() => {});
-  await rm(stage, { recursive: true, force: true });
-  await unlink(file).catch(() => {});
-  await unlink(file.replace(".dump.enc", ".assets.tar.enc")).catch(() => {});
+  if (stageOwned) await rm(stage, { recursive: true, force: true });
+  if (fileOwned) await unlink(file);
+  if (assetsOwned) await unlink(file.replace(".dump.enc", ".assets.tar.enc"));
 }

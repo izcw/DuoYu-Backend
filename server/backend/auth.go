@@ -8,12 +8,14 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/jackc/pgx/v5"
 	"golang.org/x/oauth2"
 )
 
@@ -188,7 +190,9 @@ func (s *Server) authRoute(w http.ResponseWriter, r *http.Request) error {
 			return e
 		}
 		if c, e := r.Cookie("duoyu_admin"); e == nil {
-			s.db.Exec(r.Context(), "DELETE FROM backend_sessions WHERE hash=$1", digest(c.Value))
+			if _, e = s.db.Exec(r.Context(), "DELETE FROM backend_sessions WHERE hash=$1", digest(c.Value)); e != nil {
+				return e
+			}
 		}
 		s.cookie(w, "duoyu_admin", "", -1)
 		writeJSON(w, 200, map[string]bool{"ok": true})
@@ -213,18 +217,38 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) error {
 	var b []byte
 	e = tx.QueryRow(r.Context(), "SELECT encrypted FROM backend_sessions WHERE hash=$1 AND expires_at>now() FOR UPDATE", digest(c.Value)).Scan(&b)
 	if e != nil {
-		return fail(401, "管理会话已过期")
+		if errors.Is(e, pgx.ErrNoRows) {
+			return fail(401, "管理会话已过期")
+		}
+		return e
 	}
 	var sess adminSession
 	if s.unseal(b, &sess) != nil || sess.Sub != s.cfg.AdminSub {
 		return fail(403, "需要唯一超级管理员权限")
 	}
+	// Reject untrusted writes before rotating credentials at the identity provider.
+	// A later rollback cannot undo a remote refresh-token rotation.
+	if r.Method != "GET" && r.Method != "HEAD" {
+		if r.Header.Get("Origin") != s.cfg.Origin || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(sess.CSRF)) != 1 {
+			return fail(403, "请求校验失败，请刷新页面")
+		}
+	}
 	if !sess.Token.Valid() {
+		if sess.Token.RefreshToken == "" {
+			return fail(401, "登录已失效，请重新登录")
+		}
 		cfg := s.oauth()
 		ctx := context.WithValue(r.Context(), oauth2.HTTPClient, s.http)
 		token, e := cfg.TokenSource(ctx, &sess.Token).Token()
 		if e != nil {
-			return fail(401, "登录已失效，请重新登录")
+			var response *oauth2.RetrieveError
+			if errors.As(e, &response) && response.Response != nil {
+				switch response.Response.StatusCode {
+				case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden:
+					return fail(401, "登录已失效，请重新登录")
+				}
+			}
+			return fail(503, "账号服务暂不可用，请稍后重试")
 		}
 		sess.Token = *token
 		encrypted, e := s.seal(sess)
@@ -235,20 +259,17 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) error {
 			return e
 		}
 	}
+	// Persist a successful remote rotation even if the following UserInfo request
+	// is temporarily unavailable. The previous refresh token is already consumed.
+	if e = tx.Commit(r.Context()); e != nil {
+		return e
+	}
 	info, e := s.userInfo(r.Context(), sess.Token.AccessToken)
 	if e != nil {
 		return e
 	}
 	if info.Sub != sess.Sub {
 		return fail(403, "身份已改变")
-	}
-	if r.Method != "GET" && r.Method != "HEAD" {
-		if r.Header.Get("Origin") != s.cfg.Origin || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(sess.CSRF)) != 1 {
-			return fail(403, "请求校验失败，请刷新页面")
-		}
-	}
-	if e = tx.Commit(r.Context()); e != nil {
-		return e
 	}
 	ctx := context.WithValue(r.Context(), csrfContext{}, sess.CSRF)
 	ctx = context.WithValue(ctx, profileContext{}, info)

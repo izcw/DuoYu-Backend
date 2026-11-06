@@ -68,7 +68,10 @@ export async function createAuthenticator(config, dependencies = {}) {
       throw new ApiError(503, 'identity_unavailable');
     }
     if (!u.ok)
-      throw new ApiError(u.status >= 500 ? 503 : 401, 'identity_rejected');
+      throw new ApiError(
+        u.status === 429 || u.status >= 500 ? 503 : 401,
+        'identity_rejected',
+      );
     const info = await u.json();
     if (info.sub !== claims.sub) throw new ApiError(401, 'subject_mismatch');
     return {
@@ -142,7 +145,10 @@ export function createSyncServer({ pool, authenticate, origins, clock = Date.now
       if (req.method === 'POST' && restore) {
         if (!req.headers['content-type']?.startsWith('application/json')) throw new ApiError(415, 'json_required');
         let input;
-        try { input = JSON.parse((await body(4096)).toString()); } catch { throw new ApiError(400, 'invalid_json'); }
+        try { input = JSON.parse((await body(4096)).toString()); } catch (e) {
+          if (e instanceof ApiError) throw e;
+          throw new ApiError(400, 'invalid_json');
+        }
         if (!input || typeof input !== 'object') throw new ApiError(400, 'invalid_json');
         return send(200, await applyOperation(pool, account,
           { id: input.id, deviceId: input.deviceId, epoch: input.epoch },

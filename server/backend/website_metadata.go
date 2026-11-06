@@ -188,11 +188,13 @@ func resolveSite(ctx context.Context, u *url.URL) siteMetadata {
 			requestContext = ctx
 		}
 		b, media, _, e := readSite(requestContext, candidate)
-		detected := http.DetectContentType(b)
-		if e != nil || len(b) == 0 || !strings.HasPrefix(media, "image/") || !(strings.HasPrefix(detected, "image/") || (len(b) >= 4 && b[0] == 0 && b[1] == 0 && b[2] == 1 && b[3] == 0)) {
+		if e != nil {
 			continue
 		}
-		media = strings.Split(media, ";")[0]
+		media = siteIconType(b, media)
+		if media == "" {
+			continue
+		}
 		value.Icon = "data:" + media + ";base64," + base64.StdEncoding.EncodeToString(b)
 		if i == len(icons)-1 {
 			value.Source = "public-icon-cache"

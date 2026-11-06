@@ -6,6 +6,11 @@ export const session = reactive({
   error: "",
   profile: { name: "", picture: "" },
 });
+class AdminRequestError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
 export async function api(
   path: string,
   body?: unknown,
@@ -20,14 +25,26 @@ export async function api(
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
-  const data = await response.json();
+  if (response.status === 401) {
+    session.authenticated = false;
+    session.csrf = "";
+    session.profile = { name: "", picture: "" };
+  }
+  const data = await response.json().catch(() => {
+    if (response.ok) throw Error("服务返回了无效响应，请重试");
+    return null;
+  });
   if (!response.ok) {
-    if (response.status === 401) session.authenticated = false;
-    throw Error(data.error || "请求失败");
+    throw new AdminRequestError(response.status,
+      typeof data?.error === "string" && data.error
+        ? data.error
+        : `请求失败（HTTP ${response.status}）`,
+    );
   }
   return data;
 }
 export async function loadSession() {
+  session.ready = false;
   try {
     const me = await api("me");
     session.csrf = me.csrf;
@@ -35,7 +52,9 @@ export async function loadSession() {
     session.authenticated = true;
     session.error = "";
   } catch (e) {
-    session.error = e instanceof Error ? e.message : "服务暂不可用";
+    session.error = e instanceof AdminRequestError && e.status === 401
+      ? ""
+      : e instanceof Error ? e.message : "服务暂不可用";
   } finally {
     session.ready = true;
   }

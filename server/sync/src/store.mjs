@@ -72,20 +72,26 @@ const fields = {
   wallpapers: ["id", "asset", "sourceUrl", "contentHash", "selection"],
 };
 const same = (a, b) => canonical(a ?? null) === canonical(b ?? null);
+const maxAccountEntities = 10000;
 export function validateOperation(op) {
+  validateOperationWithLimit(op, 2000);
+}
+function validateOperationWithLimit(op, maxChanges) {
   if (
     !op ||
     !uuid.test(op.id) ||
     !uuid.test(op.deviceId) ||
     !Array.isArray(op.changes) ||
     !op.changes.length ||
-    op.changes.length > 2000
+    op.changes.length > maxChanges
   )
     throw new ApiError(400, "invalid_operation");
   if (op.resolutionOf !== undefined && !uuid.test(op.resolutionOf))
     throw new ApiError(400, "invalid_resolution");
   const seen = new Set();
   for (const c of op.changes) {
+    if (!c || typeof c !== "object" || Array.isArray(c))
+      throw new ApiError(400, "invalid_change");
     if (c.restore !== undefined && typeof c.restore !== "boolean")
       throw new ApiError(400, "invalid_restore");
     if (
@@ -236,7 +242,7 @@ function mergeIcon(base, local, remote) {
 }
 export function validateGraph(rows) {
   if (
-    rows.length > 10000 ||
+    rows.length > maxAccountEntities ||
     Buffer.byteLength(JSON.stringify(rows)) > 8 * 1024 * 1024
   )
     throw new ApiError(413, "account_data_quota");
@@ -396,7 +402,9 @@ export async function applyOperation(pool, account, op, backup) {
         const base = old && !old.deleted ? old.payload : null, value = next?.payload ?? null;
         return same(base, value) ? [] : [{ table: (next ?? old).table, id: (next ?? old).id, base, value, revision: old?.revision ?? '0', restore: true }];
       }) };
-      if (op.changes.length) validateOperation(op);
+      // A trusted, server-generated restore replaces an entire account in one
+      // transaction. Ordinary client batches retain their smaller 2,000 limit.
+      if (op.changes.length) validateOperationWithLimit(op, maxAccountEntities);
       // Backup retention protects the files; restore their database metadata in
       // the same transaction so a failure never leaves a partial restored graph.
       for (const [sha, asset] of Object.entries(saved.snapshot.assets ?? {})) {

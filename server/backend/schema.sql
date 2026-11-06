@@ -21,7 +21,6 @@ CREATE TABLE IF NOT EXISTS backend_template_applies(account_id uuid NOT NULL REF
 CREATE OR REPLACE FUNCTION sync_asset_size() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.body IS NOT NULL THEN NEW.byte_size=octet_length(NEW.body); END IF; RETURN NEW; END $$;
 DROP TRIGGER IF EXISTS sync_asset_size_trigger ON sync_assets;
 CREATE TRIGGER sync_asset_size_trigger BEFORE INSERT OR UPDATE ON sync_assets FOR EACH ROW EXECUTE FUNCTION sync_asset_size();
-COMMIT;
 
 ALTER TABLE backend_users ADD COLUMN IF NOT EXISTS picture text NOT NULL DEFAULT '';
 
@@ -30,3 +29,4 @@ ALTER TABLE backend_jobs ADD CONSTRAINT backend_jobs_kind_check CHECK(kind IN ('
 
 ALTER TABLE backend_catalog_files ADD COLUMN IF NOT EXISTS preview_sha256 text;
 ALTER TABLE backend_catalog_files ADD COLUMN IF NOT EXISTS preview_bytes bigint;
+COMMIT;

@@ -37,6 +37,22 @@ func newUUID() string {
 	h := digest(randomToken())
 	return h[:8] + "-" + h[8:12] + "-4" + h[13:16] + "-8" + h[17:20] + "-" + h[20:32]
 }
+
+// The quota row exists even before a default is selected. Lock it before
+// inspecting the default, its catalog entry or its size. This orders only
+// administrative writes that share those invariants across server instances.
+func (s *Server) catalogWrite(ctx context.Context, kind string, write func(pgx.Tx, int64) error) error {
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		var quota int64
+		if kind == "templates" {
+			if err := tx.QueryRow(ctx, "SELECT (value#>>'{}')::bigint FROM backend_settings WHERE id='storage_quota_bytes' FOR UPDATE").Scan(&quota); err != nil {
+				return err
+			}
+		}
+		return write(tx, quota)
+	})
+}
+
 func (s *Server) captureTemplate(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
 		ID          string `json:"id"`
@@ -53,6 +69,7 @@ func (s *Server) captureTemplate(w http.ResponseWriter, r *http.Request) error {
 		return fail(400, "请选择有效用户并填写模板名称")
 	}
 	snap := templateSnapshot{Format: "duoyu-template", Version: 1, Source: in.Account, Entities: []templateEntity{}, Assets: []templateAsset{}}
+	var used int64
 	e := s.tx(r.Context(), in.Account, func(tx pgx.Tx) error {
 		// Same row lock as sync writes: the snapshot is one coherent account revision.
 		if _, e := tx.Exec(r.Context(), "SELECT id FROM sync_accounts WHERE id=$1 FOR UPDATE", in.Account); e != nil {
@@ -84,7 +101,7 @@ func (s *Server) captureTemplate(w http.ResponseWriter, r *http.Request) error {
 		data, _ := json.Marshal(snap.Entities)
 		refs := assetReference.FindAllSubmatch(data, -1)
 		seen := map[string]bool{}
-		var used int64
+
 		for _, ref := range refs {
 			hash := string(ref[1])
 			if seen[hash] {
@@ -116,13 +133,6 @@ func (s *Server) captureTemplate(w http.ResponseWriter, r *http.Request) error {
 			snap.Assets = append(snap.Assets, templateAsset{hash, media, int64(len(b))})
 			used += int64(len(b))
 		}
-		var quota int64
-		if e := tx.QueryRow(r.Context(), "SELECT (value#>>'{}')::bigint FROM backend_settings WHERE id='storage_quota_bytes'").Scan(&quota); e != nil {
-			return e
-		}
-		if used > quota {
-			return fail(413, "模板图片超过当前默认用户配额")
-		}
 		return nil
 	})
 	if e != nil {
@@ -130,17 +140,22 @@ func (s *Server) captureTemplate(w http.ResponseWriter, r *http.Request) error {
 	}
 	data, _ := json.Marshal(snap)
 	var id string
-	if in.ID != "" {
-		if !uuidPattern.MatchString(in.ID) || (in.Status != "draft" && in.Status != "published" && in.Status != "archived") {
-			return fail(400, "无效模板")
+	e = s.catalogWrite(r.Context(), "templates", func(tx pgx.Tx, quota int64) error {
+		if used > quota {
+			return fail(413, "模板图片超过当前默认用户配额")
 		}
-		err := s.db.QueryRow(r.Context(), "UPDATE backend_catalog SET name=$2,description=$3,payload=$4,status=$5,version=version+1,updated_at=now() WHERE id=$1 AND kind='templates' AND version=$6 AND ($5='published' OR NOT EXISTS(SELECT 1 FROM backend_settings WHERE id='default_template_id' AND value#>>'{}'=$1::text)) RETURNING id::text", in.ID, in.Name, in.Description, data, in.Status, in.Version).Scan(&id)
-		if err != nil {
-			return fail(409, "模板已变更或为官方默认模板")
+		if in.ID != "" {
+			if !uuidPattern.MatchString(in.ID) || (in.Status != "draft" && in.Status != "published" && in.Status != "archived") {
+				return fail(400, "无效模板")
+			}
+			err := tx.QueryRow(r.Context(), "UPDATE backend_catalog SET name=$2,description=$3,payload=$4,status=$5,version=version+1,updated_at=now() WHERE id=$1 AND kind='templates' AND version=$6 AND ($5='published' OR NOT EXISTS(SELECT 1 FROM backend_settings WHERE id='default_template_id' AND value#>>'{}'=$1::text)) RETURNING id::text", in.ID, in.Name, in.Description, data, in.Status, in.Version).Scan(&id)
+			if err == pgx.ErrNoRows {
+				return fail(409, "模板已变更或为官方默认模板")
+			}
+			return err
 		}
-	} else {
-		e = s.db.QueryRow(r.Context(), "INSERT INTO backend_catalog(kind,name,status,payload,description) VALUES('templates',$1,'draft',$2,$3) RETURNING id::text", in.Name, data, in.Description).Scan(&id)
-	}
+		return tx.QueryRow(r.Context(), "INSERT INTO backend_catalog(kind,name,status,payload,description) VALUES('templates',$1,'draft',$2,$3) RETURNING id::text", in.Name, data, in.Description).Scan(&id)
+	})
 	if e != nil {
 		return e
 	}
@@ -155,24 +170,29 @@ func (s *Server) setDefaultTemplate(w http.ResponseWriter, r *http.Request) erro
 	if e := decode(w, r, &in); e != nil {
 		return e
 	}
-	if in.ID != "" {
-		if !uuidPattern.MatchString(in.ID) {
-			return fail(400, "模板ID无效")
+	e := s.catalogWrite(r.Context(), "templates", func(tx pgx.Tx, quota int64) error {
+		if in.ID != "" {
+			if !uuidPattern.MatchString(in.ID) {
+				return fail(400, "模板ID无效")
+			}
+			var required int64
+			err := tx.QueryRow(r.Context(), `SELECT COALESCE((SELECT sum((a->>'bytes')::bigint)
+				FROM jsonb_array_elements(payload->'assets') a),0) FROM backend_catalog
+				WHERE id=$1 AND kind='templates' AND status='published' AND payload->>'format'='duoyu-template'`, in.ID).Scan(&required)
+			if err == pgx.ErrNoRows {
+				return fail(400, "请先发布从用户数据创建的模板")
+			}
+			if err != nil {
+				return err
+			}
+			if required > quota {
+				return fail(409, "模板图片超过默认用户配额，请先提高配额")
+			}
 		}
-		var valid bool
-		if e := s.db.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM backend_catalog WHERE id=$1 AND kind='templates' AND status='published' AND payload->>'format'='duoyu-template')", in.ID).Scan(&valid); e != nil || !valid {
-			return fail(400, "请先发布从用户数据创建的模板")
-		}
-		var required, quota int64
-		if e := s.db.QueryRow(r.Context(), "SELECT COALESCE(sum((a->>'bytes')::bigint),0),(SELECT (value#>>'{}')::bigint FROM backend_settings WHERE id='storage_quota_bytes') FROM backend_catalog c CROSS JOIN LATERAL jsonb_array_elements(c.payload->'assets') a WHERE c.id=$1", in.ID).Scan(&required, &quota); e != nil {
-			return e
-		}
-		if required > quota {
-			return fail(409, "模板图片超过默认用户配额，请先提高配额")
-		}
-	}
-	data, _ := json.Marshal(in.ID)
-	_, e := s.db.Exec(r.Context(), "INSERT INTO backend_settings(id,value) VALUES('default_template_id',$1) ON CONFLICT(id) DO UPDATE SET value=excluded.value", data)
+		data, _ := json.Marshal(in.ID)
+		_, err := tx.Exec(r.Context(), "INSERT INTO backend_settings(id,value) VALUES('default_template_id',$1) ON CONFLICT(id) DO UPDATE SET value=excluded.value", data)
+		return err
+	})
 	if e != nil {
 		return e
 	}
@@ -191,6 +211,11 @@ func (s *Server) initializeAccount(ctx context.Context, u Identity) error {
 			return e
 		}
 		if !hasData {
+			// A first-time account must apply the same published default that
+			// it selected, even if an administrator is changing it concurrently.
+			if _, err := tx.Exec(ctx, "SELECT id FROM backend_settings WHERE id='storage_quota_bytes' FOR SHARE"); err != nil {
+				return err
+			}
 			var id string
 			e = tx.QueryRow(ctx, "SELECT value#>>'{}' FROM backend_settings WHERE id='default_template_id'").Scan(&id)
 			if e != nil && e != pgx.ErrNoRows {

@@ -33,6 +33,10 @@ def read_acl(path, kind):
     if not acl:
         raise OSError(ctypes.get_errno(), 'Cannot read backup ACL')
     text = lib.acl_to_text(acl, None)
+    if not text:
+        error = ctypes.get_errno()
+        lib.acl_free(acl)
+        raise OSError(error, 'Cannot decode backup ACL')
     try:
         return ctypes.string_at(text).decode()
     finally:
@@ -49,19 +53,31 @@ def write_acl(path, text, kind=ACCESS):
     finally:
         lib.acl_free(acl)
 
-def grant(path, permissions, owner_execute=False):
+def add_backend_access(text, permissions, owner_execute=False):
     entries = {}
-    for line in read_acl(path, ACCESS).splitlines():
+    for line in text.splitlines():
         line = line.split('#', 1)[0].strip()
         if line:
             key, value = line.rsplit(':', 1)
             entries[key] = value
+    # The mask applies to every named user and group, including the owning
+    # group. Preserve their effective access when granting rights to the API.
+    old_mask = entries.get('mask:', entries['group:'])
+    added = set(permissions) - set(old_mask) - {'-'}
+    for key, value in entries.items():
+        if key.startswith('group:') or (key.startswith('user:') and key != 'user:'):
+            entries[key] = ''.join('-' if bit in added else bit for bit in value)
+    entries.pop('user:duoyu-backend', None)
     entries['user:' + str(uid)] = permissions
-    mask = entries.get('mask:', entries.get('group:', '---'))
-    entries['mask:'] = ''.join(c if c in mask + permissions else '-' for c in 'rwx')
+    entries['mask:'] = ''.join(c if c in old_mask + permissions else '-' for c in 'rwx')
     if owner_execute:
         entries['user:'] = entries['user:'][:2] + 'x'
-    write_acl(path, '\n'.join(key + ':' + value for key, value in entries.items()))
+    return '\n'.join(key + ':' + value for key, value in entries.items())
+
+
+def grant(path, permissions, owner_execute=False):
+    write_acl(path, add_backend_access(read_acl(path, ACCESS), permissions, owner_execute))
+
 
 grant(root, '--x', owner_execute=True)
 grant(directory, 'r-x')
@@ -69,11 +85,7 @@ grant(directory, 'r-x')
 default = read_acl(directory, DEFAULT).strip()
 if not default:
     default = 'user::rwx\ngroup::r-x\nmask::r-x\nother::---'
-entries = dict(line.split('#', 1)[0].strip().rsplit(':', 1) for line in default.splitlines() if line.strip())
-entries['user:' + str(uid)] = 'r-x'
-mask = entries.get('mask:', entries.get('group:', '---'))
-entries['mask:'] = ''.join(c if c in mask + 'rx' else '-' for c in 'rwx')
-write_acl(directory, '\n'.join(key + ':' + value for key, value in entries.items()), DEFAULT)
+write_acl(directory, add_backend_access(default, 'r-x'), DEFAULT)
 count = 0
 for path in directory.iterdir():
     if re.fullmatch(r'sync-[\dTZ:.\-]+\.(dump|assets\.tar)\.enc', path.name) and stat.S_ISREG(path.lstat().st_mode):

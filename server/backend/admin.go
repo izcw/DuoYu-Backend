@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 var uuidPattern = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
@@ -138,25 +139,18 @@ func (s *Server) adminRoute(w http.ResponseWriter, r *http.Request) error {
 			if !backupPattern.MatchString(name) {
 				return fail(400, "文件名无效")
 			}
-			file := filepath.Join(s.cfg.BackupDir, name)
-			stat, e := os.Lstat(file)
-			if os.IsNotExist(e) {
-				return fail(404, "备份不存在")
-			}
-			if e != nil {
-				return fail(503, "备份文件不可读取，请检查后端账号访问权限")
-			}
-			if !stat.Mode().IsRegular() {
-				return fail(404, "备份不存在")
-			}
-			stream, e := os.Open(file)
-			if os.IsNotExist(e) {
+			stream, e := openBackupFile(s.cfg.BackupDir, name)
+			if os.IsNotExist(e) || e == os.ErrInvalid {
 				return fail(404, "备份不存在")
 			}
 			if e != nil {
 				return fail(503, "备份文件不可读取，请检查后端账号访问权限")
 			}
 			defer stream.Close()
+			stat, e := stream.Stat()
+			if e != nil {
+				return fail(503, "备份文件不可读取，请检查后端账号访问权限")
+			}
 			w.Header().Set("Cache-Control", "private, no-store")
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
@@ -219,14 +213,17 @@ func (s *Server) adminRoute(w http.ResponseWriter, r *http.Request) error {
 			if in.QuotaMB < 1 || in.QuotaMB > 102400 {
 				return fail(400, "默认配额范围为1–102400MB")
 			}
-			var required int64
-			if e := s.db.QueryRow(ctx, "SELECT COALESCE(sum((asset->>'bytes')::bigint),0) FROM backend_catalog c CROSS JOIN LATERAL jsonb_array_elements(COALESCE(c.payload->'assets','[]'::jsonb)) asset WHERE c.id::text=(SELECT value#>>'{}' FROM backend_settings WHERE id='default_template_id')").Scan(&required); e != nil {
-				return e
-			}
-			if required > in.QuotaMB*1048576 {
-				return fail(409, "官方默认模板图片超过这个配额，请先更换模板或提高配额")
-			}
-			_, e := s.db.Exec(ctx, "UPDATE backend_settings SET value=to_jsonb($1::bigint) WHERE id='storage_quota_bytes'", in.QuotaMB*1048576)
+			e := s.catalogWrite(ctx, "templates", func(tx pgx.Tx, _ int64) error {
+				var required int64
+				if e := tx.QueryRow(ctx, "SELECT COALESCE(sum((asset->>'bytes')::bigint),0) FROM backend_catalog c CROSS JOIN LATERAL jsonb_array_elements(COALESCE(c.payload->'assets','[]'::jsonb)) asset WHERE c.id::text=(SELECT value#>>'{}' FROM backend_settings WHERE id='default_template_id')").Scan(&required); e != nil {
+					return e
+				}
+				if required > in.QuotaMB*1048576 {
+					return fail(409, "官方默认模板图片超过这个配额，请先更换模板或提高配额")
+				}
+				_, err := tx.Exec(ctx, "UPDATE backend_settings SET value=to_jsonb($1::bigint) WHERE id='storage_quota_bytes'", in.QuotaMB*1048576)
+				return err
+			})
 			if e != nil {
 				return e
 			}
@@ -246,12 +243,10 @@ func (s *Server) adminRoute(w http.ResponseWriter, r *http.Request) error {
 			if in.Kind != "backup" && in.Kind != "backup-full" && in.Kind != "backup-incremental" && in.Kind != "asset-migration" {
 				return fail(400, "任务无效")
 			}
-			var id string
-			e := s.db.QueryRow(ctx, "INSERT INTO backend_jobs(kind) SELECT $1 WHERE NOT EXISTS(SELECT 1 FROM backend_jobs WHERE status IN ('queued','running') AND kind=$1) RETURNING id::text", in.Kind).Scan(&id)
+			id, e := s.enqueueJob(ctx, in.Kind)
 			if e != nil {
-				return fail(409, "同类任务正在运行")
+				return e
 			}
-			s.audit(ctx, "job.create", in.Kind+":"+id)
 			writeJSON(w, 202, map[string]string{"id": id})
 			return nil
 		}
@@ -361,27 +356,35 @@ func (s *Server) adminRoute(w http.ResponseWriter, r *http.Request) error {
 				e = s.db.QueryRow(ctx, "INSERT INTO backend_catalog(kind,name,description,status,payload) VALUES($1,$2,$3,$4,$5) RETURNING id::text", parts[1], in.Name, in.Description, in.Status, in.Payload).Scan(&id)
 			} else if len(parts) == 3 && uuidPattern.MatchString(parts[2]) {
 				id = parts[2]
-				var original []byte
-				var isDefault bool
-				if e = s.db.QueryRow(ctx, "SELECT payload,COALESCE((SELECT value#>>'{}' FROM backend_settings WHERE id='default_template_id')=id::text,false) FROM backend_catalog WHERE id=$1 AND kind=$2", id, parts[1]).Scan(&original, &isDefault); e != nil {
-					return fail(404, "资源不存在")
-				}
-				if isDefault && in.Status != "published" {
-					return fail(409, "请先取消官方默认模板，再归档或下架")
-				}
-				var source map[string]any
-				json.Unmarshal(original, &source)
-				if source["format"] != "duoyu-template" && payload["format"] == "duoyu-template" {
-					return fail(400, "请通过来源用户创建快照模板")
-				}
-				if source["format"] == "duoyu-template" {
-					in.Payload = original
-				}
-				tag, err := s.db.Exec(ctx, "UPDATE backend_catalog SET name=$3,description=$4,status=$5,payload=$6,version=version+1,updated_at=now() WHERE id=$1 AND kind=$2 AND version=$7", id, parts[1], in.Name, in.Description, in.Status, in.Payload, in.Version)
-				e = err
-				if e == nil && tag.RowsAffected() != 1 {
-					return fail(409, "资源已被修改，请重新加载")
-				}
+				e = s.catalogWrite(ctx, parts[1], func(tx pgx.Tx, _ int64) error {
+					var original []byte
+					var isDefault bool
+					if e := tx.QueryRow(ctx, "SELECT payload,COALESCE((SELECT value#>>'{}' FROM backend_settings WHERE id='default_template_id')=id::text,false) FROM backend_catalog WHERE id=$1 AND kind=$2", id, parts[1]).Scan(&original, &isDefault); e != nil {
+						if e == pgx.ErrNoRows {
+							return fail(404, "资源不存在")
+						}
+						return e
+					}
+					if isDefault && in.Status != "published" {
+						return fail(409, "请先取消官方默认模板，再归档或下架")
+					}
+					var source map[string]any
+					json.Unmarshal(original, &source)
+					if source["format"] != "duoyu-template" && payload["format"] == "duoyu-template" {
+						return fail(400, "请通过来源用户创建快照模板")
+					}
+					if source["format"] == "duoyu-template" {
+						in.Payload = original
+					}
+					tag, err := tx.Exec(ctx, "UPDATE backend_catalog SET name=$3,description=$4,status=$5,payload=$6,version=version+1,updated_at=now() WHERE id=$1 AND kind=$2 AND version=$7", id, parts[1], in.Name, in.Description, in.Status, in.Payload, in.Version)
+					if err != nil {
+						return err
+					}
+					if tag.RowsAffected() != 1 {
+						return fail(409, "资源已被修改，请重新加载")
+					}
+					return nil
+				})
 			} else {
 				return fail(400, "资源ID无效")
 			}
@@ -399,19 +402,25 @@ func (s *Server) adminRoute(w http.ResponseWriter, r *http.Request) error {
 			return fail(400, "资源无效")
 		}
 		version, _ := strconv.ParseInt(r.URL.Query().Get("version"), 10, 64)
-		var isDefault bool
-		if e := s.db.QueryRow(ctx, "SELECT COALESCE((SELECT value#>>'{}' FROM backend_settings WHERE id='default_template_id')=$1,false)", parts[2]).Scan(&isDefault); e != nil {
-			return e
-		}
-		if isDefault {
-			return fail(409, "请先取消官方默认模板，再删除")
-		}
-		tag, e := s.db.Exec(ctx, "DELETE FROM backend_catalog WHERE id=$1 AND kind=$2 AND version=$3", parts[2], parts[1], version)
+		e := s.catalogWrite(ctx, parts[1], func(tx pgx.Tx, _ int64) error {
+			var isDefault bool
+			if e := tx.QueryRow(ctx, "SELECT COALESCE((SELECT value#>>'{}' FROM backend_settings WHERE id='default_template_id')=$1,false)", parts[2]).Scan(&isDefault); e != nil {
+				return e
+			}
+			if isDefault {
+				return fail(409, "请先取消官方默认模板，再删除")
+			}
+			tag, e := tx.Exec(ctx, "DELETE FROM backend_catalog WHERE id=$1 AND kind=$2 AND version=$3", parts[2], parts[1], version)
+			if e != nil {
+				return e
+			}
+			if tag.RowsAffected() != 1 {
+				return fail(409, "资源已被修改，请重新加载")
+			}
+			return nil
+		})
 		if e != nil {
 			return e
-		}
-		if tag.RowsAffected() != 1 {
-			return fail(409, "资源已被修改，请重新加载")
 		}
 		s.audit(ctx, "catalog.delete", parts[2])
 		writeJSON(w, 200, map[string]bool{"ok": true})

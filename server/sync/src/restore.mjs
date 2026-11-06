@@ -1,15 +1,17 @@
 // Administrative recovery only. This script never runs from an HTTP endpoint.
 import { createDecipheriv, randomUUID } from "node:crypto";
 import { open, readFile, unlink, writeFile } from "node:fs/promises";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createReadStream } from "node:fs";
 import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
+import { parseArgs, promisify } from "node:util";
 import { pipeline } from "node:stream/promises";
 import { restoreFileBackup } from "./file-backup.mjs";
 import { access } from "node:fs/promises";
 const execute = promisify(execFile),
-  args = process.argv.slice(2),
-  backup = args[args.indexOf("--backup") + 1];
+  { values } = parseArgs({ options: {
+    backup: { type: "string" }, confirm: { type: "string" }, "dry-run": { type: "boolean" },
+  } }),
+  backup = values.backup;
 // Native BaoTa Go projects must be stopped through the panel so its watchdog
 // does not restart a process during database recovery. Legacy installs retain systemd.
 async function backendLifecycle(action) {
@@ -29,17 +31,17 @@ async function backendLifecycle(action) {
 }
 if (process.getuid?.() !== 0) throw Error("Administrator privileges required");
 if (
-  !backup?.startsWith("/www/backup/duoyu-sync/sync-") ||
-  !backup.endsWith(".dump.enc") ||
+  !backup || !/^\/www\/backup\/duoyu-sync\/sync-[^/\\]+\.dump\.enc$/.test(backup) ||
   backup.includes("..")
 )
   throw Error("Specify --backup with a DuoYu encrypted backup");
-const dry = args.includes("--dry-run");
-if (!dry && args[args.indexOf("--confirm") + 1] !== "duoyu_extensions")
+const dry = values["dry-run"];
+if (!dry && values.confirm !== "duoyu_extensions")
   throw Error("Explicit --confirm duoyu_extensions required");
 const temp = "/www/backup/duoyu-sync/.verified-" + randomUUID() + ".dump",
   maintenance = "/www/server/duoyu-sync-maintenance";
-let stopped = false,
+let maintenanceOwned = false,
+  tempOwned = false,
   restored = false,
   healthy = false,
   wasActive = false;
@@ -73,28 +75,32 @@ async function psql(bytes) {
 }
 try {
   const file = await open(backup, "r");
-  const size = (await file.stat()).size;
-  if (size < 33) throw Error("Invalid encrypted backup");
   const header = Buffer.alloc(16),
     tag = Buffer.alloc(16);
-  await file.read(header, 0, 16, 0);
-  await file.read(tag, 0, 16, size - 16);
-  await file.close();
+  let size;
+  try {
+    size = (await file.stat()).size;
+    if (size < 33) throw Error("Invalid encrypted backup");
+    await file.read(header, 0, 16, 0);
+    await file.read(tag, 0, 16, size - 16);
+  } finally { await file.close(); }
   if (header.subarray(0, 4).toString() !== "DYS1")
     throw Error("Invalid backup format");
   const key = await readFile("/www/server/duoyu-sync-backup.key");
   const decipher = createDecipheriv("aes-256-gcm", key, header.subarray(4));
   decipher.setAuthTag(tag);
   // Complete GCM validation before any plaintext reaches pg_restore.
+  const plain = await open(temp, "wx", 0o600);
+  tempOwned = true;
   await pipeline(
     createReadStream(backup, { start: 16, end: size - 17 }),
     decipher,
-    createWriteStream(temp, { flags: "wx", mode: 0o600 }),
+    plain.createWriteStream(),
   );
   const assetBackup = backup.replace(".dump.enc", ".assets.tar.enc");
   const hasAssets = await access(assetBackup)
     .then(() => true)
-    .catch(() => false);
+    .catch(error => { if (error.code === "ENOENT") return false; throw error; });
   if (hasAssets)
     await restoreFileBackup(
       assetBackup,
@@ -110,6 +116,11 @@ try {
       new URL("./backup.mjs", import.meta.url).pathname,
       "--keep-all",
     ]);
+    await writeFile(maintenance, "Recovery in progress\n", {
+      flag: "wx",
+      mode: 0o600,
+    });
+    maintenanceOwned = true;
     wasActive = await execute("systemctl", [
       "is-active",
       "--quiet",
@@ -117,16 +128,11 @@ try {
     ])
       .then(() => true)
       .catch(() => false);
-    await writeFile(maintenance, "Recovery in progress\n", {
-      flag: "wx",
-      mode: 0o600,
-    });
-    await execute("systemctl", ["stop", "duoyu-sync"]);
     backendActive = await backendLifecycle("status")
       .then(() => true)
       .catch(() => false);
+    await execute("systemctl", ["stop", "duoyu-sync"]);
     if (backendActive) await backendLifecycle("stop");
-    stopped = true;
     const child = spawn(
       "runuser",
       [
@@ -188,13 +194,16 @@ try {
     );
   }
 } finally {
-  await unlink(temp).catch(() => {});
-  if (stopped && (healthy || !restored)) {
-    await unlink(maintenance).catch(() => {});
-    if (wasActive) await execute("systemctl", ["start", "duoyu-sync"]);
-    if (backendActive) await backendLifecycle("start");
+  if (tempOwned) await unlink(temp);
+  if (maintenanceOwned && (healthy || !restored)) {
+    await unlink(maintenance);
+    const attempts = await Promise.allSettled([
+      wasActive && execute("systemctl", ["start", "duoyu-sync"]),
+      backendActive && backendLifecycle("start"),
+    ]);
+    for (const attempt of attempts) if (attempt.status === "rejected") throw attempt.reason;
   }
-  if (stopped && restored && !healthy)
+  if (maintenanceOwned && restored && !healthy)
     console.error(
       "Service remains in maintenance mode; review recovery before restarting",
     );

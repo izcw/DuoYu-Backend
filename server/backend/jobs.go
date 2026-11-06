@@ -9,6 +9,28 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+func (s *Server) enqueueJob(ctx context.Context, kind string) (string, error) {
+	var id string
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		// Different kinds may enqueue independently. After a previous caller
+		// commits, the next statement sees its queued or running job.
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(52615262, hashtext($1))", kind); err != nil {
+			return err
+		}
+		err := tx.QueryRow(ctx, `INSERT INTO backend_jobs(kind) SELECT $1 WHERE NOT EXISTS
+			(SELECT 1 FROM backend_jobs WHERE status IN ('queued','running') AND kind=$1) RETURNING id::text`, kind).Scan(&id)
+		if err == pgx.ErrNoRows {
+			return fail(409, "同类任务正在运行")
+		}
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, "INSERT INTO backend_audit(actor,action,target) VALUES($1,'job.create',$2)", s.cfg.AdminSub, kind+":"+id)
+		return err
+	})
+	return id, err
+}
+
 func (s *Server) jobs(ctx context.Context) {
 	// A single worker holds a PostgreSQL advisory lock, including across service restarts.
 	ticker := time.NewTicker(3 * time.Second)

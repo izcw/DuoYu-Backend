@@ -4,7 +4,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -22,8 +24,8 @@ func TestUserBackupsRetentionAndFiles(t *testing.T) {
 	if e := s.record(ctx, u); e != nil {
 		t.Fatal(e)
 	}
-	hash := strings.Repeat("a", 64)
 	image := []byte("retained-image")
+	hash := fmt.Sprintf("%x", sha256.Sum256(image))
 	if e := os.MkdirAll(filepath.Join(s.cfg.AssetRoot, u.ID), 0700); e != nil {
 		t.Fatal(e)
 	}
@@ -81,6 +83,16 @@ func TestUserBackupsRetentionAndFiles(t *testing.T) {
 	if !found {
 		t.Fatal("backup lost image")
 	}
+	if e = os.WriteFile(file, []byte("corrupt"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	r = callAdmin(s, admin, "GET", "backups/users/"+u.ID+"/"+backupID, "", false)
+	if r.Code != 503 || r.Header().Get("Content-Type") == "application/zip" {
+		t.Fatal("corrupt asset exported")
+	}
+	if e = os.WriteFile(file, image, 0600); e != nil {
+		t.Fatal(e)
+	}
 	r = callAdmin(s, ordinary, "GET", "backups/users/"+u.ID, "", false)
 	if r.Code != 403 {
 		t.Fatal("ordinary user read backups")
@@ -108,6 +120,77 @@ func TestUserBackupsRetentionAndFiles(t *testing.T) {
 	r = callAdmin(s, admin, "GET", "backups/users/"+u.ID+"/"+backupID, "", false)
 	if r.Code != 404 {
 		t.Fatal("rotated backup downloadable")
+	}
+}
+
+func TestExportRejectsLinkedAncestor(t *testing.T) {
+	root, external := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(external, "object"), []byte("private"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(root, "objects")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	file, err := openBackupFile(root, filepath.Join("objects", "object"))
+	if err == nil {
+		file.Close()
+		t.Fatal("export followed external directory link")
+	}
+}
+
+func TestLegacyBackupFileSwap(t *testing.T) {
+	s := testServer(t)
+	admin := loginCookie(t, s, "trusted-super", "admin")
+	name := "sync-2026-01-02.dump.enc"
+	target := filepath.Join(s.cfg.BackupDir, name)
+	external := filepath.Join(t.TempDir(), "external")
+	if err := os.WriteFile(external, []byte("outside-backup-root"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(s.cfg.BackupDir, "next-link")
+	if err := os.Symlink(external, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				done <- nil
+				return
+			default:
+			}
+			if err := os.Rename(link, target); err != nil {
+				done <- err
+				return
+			}
+			regular := filepath.Join(s.cfg.BackupDir, "next-file")
+			if err := os.WriteFile(regular, []byte("ok"), 0600); err != nil {
+				done <- err
+				return
+			}
+			if err := os.Rename(regular, target); err != nil {
+				done <- err
+				return
+			}
+			if err := os.Symlink(external, link); err != nil {
+				done <- err
+				return
+			}
+		}
+	}()
+	defer func() {
+		close(stop)
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
+	for i := 0; i < 250; i++ {
+		r := callAdmin(s, admin, "GET", "backups/"+name, "", false)
+		if r.Code == 200 && r.Body.String() != "ok" {
+			t.Fatal("legacy route served a replacement outside the backup root")
+		}
 	}
 }
 func TestSystemBackupListAndDownload(t *testing.T) {

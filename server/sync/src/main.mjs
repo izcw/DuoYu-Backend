@@ -1,6 +1,7 @@
 import { Pool } from 'pg';
 import { readFile } from 'node:fs/promises';
 import { createAuthenticator, createSyncServer } from './http.mjs';
+import { createShutdown } from './lifecycle.mjs';
 const pool = new Pool({
   max: 10,
   connectionTimeoutMillis: 10000,
@@ -27,9 +28,15 @@ server.headersTimeout = 15000;
 server.listen(Number(process.env.PORT ?? 5260), '127.0.0.1', () =>
   console.log('DuoYu sync listening on loopback'),
 );
-async function close() {
-  server.close();
-  await pool.end();
+const close = createShutdown(server, pool);
+let stopping = false;
+function stop() {
+  if (stopping) return;
+  stopping = true;
+  close().catch(() => {
+    console.error('Sync shutdown did not complete cleanly');
+    process.exitCode = 1;
+  });
 }
-process.on('SIGTERM', close);
-process.on('SIGINT', close);
+process.on('SIGTERM', stop);
+process.on('SIGINT', stop);

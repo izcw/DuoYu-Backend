@@ -115,6 +115,11 @@ async function command(value: string) {
   <div v-if="!session.ready" class="admin-login" role="status">
     正在连接管理系统…
   </div>
+  <div v-else-if="session.error" class="admin-login">
+    <h1>暂时无法连接管理系统</h1>
+    <p role="alert">{{ session.error }}</p>
+    <el-button @click="loadSession">重试</el-button>
+  </div>
   <div v-else-if="!session.authenticated" class="admin-login">
     <img :src="'/logo.png'" alt="多鱼" />
     <h1>多鱼管理系统</h1>

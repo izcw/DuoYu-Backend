@@ -66,3 +66,34 @@ func TestSiteMetadataBlocksLoopback(t *testing.T) {
 		t.Fatal("loopback request allowed")
 	}
 }
+
+func TestSiteIconMedia(t *testing.T) {
+	wrap := func(shape string) string {
+		return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">` + shape + `</svg>`
+	}
+	for _, markup := range []string{
+		wrap(`<rect width="32" height="32" fill="#fff"/><path d="M0 0L32 32Z"/>`),
+		wrap(`<g><circle cx="5" cy="5" r="4" stroke="black"/></g>`),
+	} {
+		if siteIconType([]byte(markup), "image/svg+xml; charset=UTF-8") != "image/svg+xml" {
+			t.Fatal("rejected static geometry")
+		}
+	}
+	for _, markup := range []string{
+		`<html onload="alert(1)"/>`, wrap(`<script>alert(1)</script>`), wrap(`<image href="https://example.com/a"/>`),
+		wrap(`<path onclick="x()" d="M0 0"/>`), wrap(`<path fill="url(https://example.com/x)" d="M0 0"/>`),
+		wrap(`<rect style="fill:red"/>`), wrap(`<foreignObject><iframe/></foreignObject>`), wrap(`<path>`),
+		`<?xml-stylesheet href="https://example.com"?>` + wrap(`<rect/>`), `<!DOCTYPE svg>` + wrap(`<rect/>`),
+		wrap(`<rect/>`) + wrap(`<path/>`), strings.Repeat(" ", 65536) + wrap(`<rect/>`),
+	} {
+		if siteIconType([]byte(markup), "image/svg+xml") != "" {
+			t.Fatal("accepted invalid or active SVG")
+		}
+	}
+	if siteIconType([]byte{0, 0, 1, 0, 1, 0}, "image/x-icon") != "image/x-icon" {
+		t.Fatal("lost ICO compatibility")
+	}
+	if siteIconType([]byte("\x89PNG\r\n\x1a\n"), "image/svg+xml") != "image/png" {
+		t.Fatal("trusted declared type over raster signature")
+	}
+}

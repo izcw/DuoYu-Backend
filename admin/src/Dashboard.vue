@@ -31,7 +31,9 @@ const cards = [
   ['operations', '累计操作'],
   ['catalog', '已发布资源'],
 ];
+let loadGeneration = 0;
 async function load() {
+  const generation = ++loadGeneration;
   busy.value = true;
   error.value = '';
   try {
@@ -39,8 +41,10 @@ async function load() {
       api('overview'),
       api('charts'),
     ]);
+    if (generation !== loadGeneration) return;
     stats.value = overview;
     await nextTick();
+    if (generation !== loadGeneration) return;
     if (chartEl.value) {
       chart ??= echarts.init(chartEl.value);
       chart.setOption({
@@ -79,9 +83,9 @@ async function load() {
       observer.observe(chartEl.value);
     }
   } catch (e) {
-    error.value = String(e);
+    if (generation === loadGeneration) error.value = String(e);
   } finally {
-    busy.value = false;
+    if (generation === loadGeneration) busy.value = false;
   }
 }
 onMounted(() => {
@@ -89,6 +93,7 @@ onMounted(() => {
   window.addEventListener('duoyu-admin-refresh', load);
 });
 onUnmounted(() => {
+  loadGeneration++;
   window.removeEventListener('duoyu-admin-refresh', load);
   observer?.disconnect();
   chart?.dispose();

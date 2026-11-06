@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,50 @@ import (
 
 	"github.com/jackc/pgx/v5"
 )
+
+// Only ordinary files below the configured backup root belong in an export.
+func openBackupFile(root, name string) (*os.File, error) {
+	if !filepath.IsLocal(name) || name == "." {
+		return nil, fmt.Errorf("invalid backup path")
+	}
+	dir, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+	var before os.FileInfo
+	for part := name; part != "."; part = filepath.Dir(part) {
+		info, err := dir.Lstat(part)
+		if err != nil {
+			return nil, err
+		}
+		if (part == name && !info.Mode().IsRegular()) || (part != name && !info.IsDir()) {
+			return nil, os.ErrInvalid
+		}
+		if part == name {
+			before = info
+		}
+	}
+	file, err := dir.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || !os.SameFile(before, info) {
+		file.Close()
+		return nil, os.ErrInvalid
+	}
+	return file, nil
+}
+
+func readBackupRecord(root, name string) ([]byte, error) {
+	file, err := openBackupFile(root, name)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return io.ReadAll(file)
+}
 
 // Allocate a revision even for unchanged data. The sync_changes trigger writes
 // the bounded snapshot in the same transaction as the account revision.
@@ -122,18 +167,23 @@ func (s *Server) backupManagement(w http.ResponseWriter, r *http.Request, path s
 				return fail(500, "备份资源标识无效")
 			}
 			if asset.Body != nil {
+				b, err := base64.StdEncoding.DecodeString(*asset.Body)
+				if err != nil || fmt.Sprintf("%x", sha256.Sum256(b)) != hash {
+					return fail(503, "备份图片完整性校验失败")
+				}
 				continue
 			}
-			file := filepath.Join(s.cfg.AssetRoot, id, hash)
-			st, err := os.Lstat(file)
-			if err != nil || !st.Mode().IsRegular() {
-				return fail(503, "备份图片暂不可读取，请检查文件存储")
-			}
-			f, err := os.Open(file)
+			file := filepath.Join(id, hash)
+			f, err := openBackupFile(s.cfg.AssetRoot, file)
 			if err != nil {
 				return fail(503, "备份图片暂不可读取")
 			}
+			digest := sha256.New()
+			_, err = io.Copy(digest, f)
 			f.Close()
+			if err != nil || fmt.Sprintf("%x", digest.Sum(nil)) != hash {
+				return fail(503, "备份图片完整性校验失败")
+			}
 			files[hash] = file
 		}
 		w.Header().Set("Content-Type", "application/zip")
@@ -159,7 +209,7 @@ func (s *Server) backupManagement(w http.ResponseWriter, r *http.Request, path s
 				}
 				_, e = io.Copy(entry, bytes.NewReader(b))
 			} else {
-				f, err := os.Open(files[hash])
+				f, err := openBackupFile(s.cfg.AssetRoot, files[hash])
 				if err != nil {
 					return err
 				}
@@ -222,7 +272,7 @@ func (s *Server) systemBackupRoute(w http.ResponseWriter, r *http.Request, path 
 			if !strings.HasSuffix(entry.Name(), ".record.json") || !uuidPattern.MatchString(name) || entry.Type()&os.ModeSymlink != 0 || entry.IsDir() {
 				continue
 			}
-			raw, err := os.ReadFile(filepath.Join(s.cfg.BackupDir, entry.Name()))
+			raw, err := readBackupRecord(s.cfg.BackupDir, entry.Name())
 			if os.IsNotExist(err) {
 				continue
 			}
@@ -245,7 +295,7 @@ func (s *Server) systemBackupRoute(w http.ResponseWriter, r *http.Request, path 
 	if !uuidPattern.MatchString(id) {
 		return fail(400, "备份ID无效")
 	}
-	raw, e := os.ReadFile(filepath.Join(s.cfg.BackupDir, id+".record.json"))
+	raw, e := readBackupRecord(s.cfg.BackupDir, id+".record.json")
 	if os.IsNotExist(e) {
 		return fail(404, "备份不存在或已轮换")
 	}
@@ -265,22 +315,11 @@ func (s *Server) systemBackupRoute(w http.ResponseWriter, r *http.Request, path 
 			if objects[part.Object] {
 				continue
 			}
-			p := filepath.Join(s.cfg.BackupDir, "objects", part.Object)
-			for _, check := range []string{filepath.Dir(p), p} {
-				st, err := os.Lstat(check)
-				if err != nil || st.Mode()&os.ModeSymlink != 0 {
-					return fail(503, "备份文件缺失")
-				}
-			}
-			f, err := os.Open(p)
+			f, err := openBackupFile(s.cfg.BackupDir, filepath.Join("objects", part.Object))
 			if err != nil {
 				return fail(503, "备份文件不可读取")
 			}
-			st, err := f.Stat()
 			f.Close()
-			if err != nil || !st.Mode().IsRegular() {
-				return fail(503, "备份文件无效")
-			}
 			objects[part.Object] = true
 		}
 	}
@@ -296,12 +335,13 @@ func (s *Server) systemBackupRoute(w http.ResponseWriter, r *http.Request, path 
 		return e
 	}
 	for name := range objects {
-		f, err := os.Open(filepath.Join(s.cfg.BackupDir, "objects", name))
+		f, err := openBackupFile(s.cfg.BackupDir, filepath.Join("objects", name))
 		if err != nil {
 			return err
 		}
 		entry, e = z.CreateHeader(&zip.FileHeader{Name: "objects/" + name, Method: zip.Store})
 		if e != nil {
+			f.Close()
 			return e
 		}
 		_, e = io.Copy(entry, f)

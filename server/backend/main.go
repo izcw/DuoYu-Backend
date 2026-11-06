@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -262,6 +263,13 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func main() {
+	failed := false
+	// Run this after request/worker/database cleanup, including on shutdown timeout.
+	defer func() {
+		if failed {
+			os.Exit(1)
+		}
+	}()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	cfg := Config{Origin: env("PUBLIC_ORIGIN", "https://sync.duoyu.link"), Issuer: env("DUOYU_ISSUER", "https://id.duoyu.link"), ClientID: os.Getenv("DUOYU_CLIENT_ID"), AdminClientID: os.Getenv("ADMIN_CLIENT_ID"), AdminSub: os.Getenv("SUPER_ADMIN_SUB"), AssetRoot: env("ASSET_ROOT", "./data/users"), AdminDist: env("ADMIN_DIST", "../../admin/dist"), BackupDir: env("BACKUP_DIR", "/www/backup/duoyu-sync"), Origins: strings.Split(os.Getenv("SYNC_ORIGINS"), ",")}
@@ -308,15 +316,19 @@ func main() {
 		log.Fatal(e)
 	}
 	server := &http.Server{Addr: env("LISTEN", "127.0.0.1:5261"), Handler: http.HandlerFunc(s.handler), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 45 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
-	go s.jobs(ctx)
-	go func() {
-		<-ctx.Done()
-		c, stop := context.WithTimeout(context.Background(), 15*time.Second)
-		defer stop()
-		server.Shutdown(c)
-	}()
+	listener, e := net.Listen("tcp", server.Addr)
+	if e != nil {
+		failed = true
+		log.Print("Backend listen failed")
+		return
+	}
+	var workers sync.WaitGroup
+	workers.Add(1)
+	go func() { defer workers.Done(); s.jobs(ctx) }()
+	defer func() { cancel(); workers.Wait() }()
 	fmt.Println("DuoYu backend listening", server.Addr)
-	if e = server.ListenAndServe(); e != nil && !errors.Is(e, http.ErrServerClosed) {
-		log.Fatal(e)
+	if e = serveHTTP(ctx, server, listener, 15*time.Second); e != nil && !errors.Is(e, http.ErrServerClosed) {
+		failed = true
+		log.Printf("Backend stopped: %v", e)
 	}
 }

@@ -16,12 +16,11 @@ BEGIN
  FOREACH relation IN ARRAY ARRAY['sync_accounts','sync_entities','sync_changes','sync_receipts','sync_conflicts','sync_assets'] LOOP
   EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY',relation);
   EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY',relation);
-  IF NOT EXISTS(SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename=relation AND policyname='account_isolation') THEN
+  IF NOT EXISTS(SELECT 1 FROM pg_policies WHERE schemaname=current_schema() AND tablename=relation AND policyname='account_isolation') THEN
    EXECUTE format('CREATE POLICY account_isolation ON %I USING (%I = nullif(current_setting(''app.account_id'', true), '''')::uuid) WITH CHECK (%I = nullif(current_setting(''app.account_id'', true), '''')::uuid)',relation,CASE WHEN relation='sync_accounts' THEN 'id' ELSE 'account_id' END,CASE WHEN relation='sync_accounts' THEN 'id' ELSE 'account_id' END);
   END IF;
  END LOOP;
 END $$;
-COMMIT;
 
 -- Asset lifecycle: an upload lease protects the gap between file upload and data commit.
 ALTER TABLE sync_assets ADD COLUMN IF NOT EXISTS referenced_at timestamptz;
@@ -110,3 +109,4 @@ CREATE TRIGGER sync_user_backup_trigger AFTER INSERT ON sync_changes FOR EACH RO
 CREATE OR REPLACE FUNCTION sync_backup_has_asset(owner_id uuid,hash text) RETURNS boolean LANGUAGE sql STABLE AS $$
  SELECT EXISTS(SELECT 1 FROM sync_user_backups WHERE account_id=owner_id AND snapshot->'assets' ? hash)
 $$;
+COMMIT;
