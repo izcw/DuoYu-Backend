@@ -146,6 +146,8 @@ export function merge(change, remote) {
   }
   const current = remote.payload;
   if (same(change.value, current)) return remote;
+  if (change.table === "preferences" && change.id === "wallpaperResumeDesktop" && change.value)
+    return { payload: change.value, deleted: false };
   if (change.revision !== remote.revision) {
     if (change.value === null) throw new ApiError(409, "delete_conflict");
     // Desktop name and wallpaper are independent edits. Treat the image
@@ -310,6 +312,9 @@ export function validateGraph(rows) {
       throw new ApiError(409, "missing_collection");
     if (r.table === "shortcutItems" && !all.has("shortcuts:" + p.groupId))
       throw new ApiError(409, "missing_shortcut_group");
+    if (r.table === "preferences" && p.id === "wallpaperResumeDesktop" &&
+        (typeof p.value !== "string" || !/^(default|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/.test(p.value)))
+      throw new ApiError(400, "invalid_desktop");
     if (r.table === "preferences" && p.id.startsWith("wallpaperDesktop:")) {
       const desktop=p.value, id=p.id.slice("wallpaperDesktop:".length);
       if (!desktop || desktop.id!==id || !Number.isFinite(desktop.created) ||
@@ -320,7 +325,7 @@ export function validateGraph(rows) {
     }
     if (
       r.table === "preferences" &&
-      !["glassMode", "searchEngine", "dockOrder", "wallpaperMode", "wallpaperSelection", "savedWallpaper:store", "savedWallpaper:upload"].includes(
+      !["glassMode", "searchEngine", "dockOrder", "wallpaperMode", "wallpaperSelection", "wallpaperResumeDesktop", "savedWallpaper:store", "savedWallpaper:upload"].includes(
         p.id,
       ) &&
       !p.id.startsWith("layout:") && !/^wallpaperDesktop:(default|[0-9a-f-]{36})$/.test(p.id)
