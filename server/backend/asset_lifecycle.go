@@ -36,7 +36,7 @@ func (s *Server) deleteAsset(w http.ResponseWriter, r *http.Request, id, hash st
 		if !exists {
 			return nil
 		} // Retry after a lost response is safe.
-		rows, e := tx.Query(r.Context(), "SELECT entity_type,entity_id,payload FROM sync_entities WHERE account_id=$1 AND NOT deleted AND $2 IN(SELECT sync_asset_references(payload))", id, hash)
+		rows, e := tx.Query(r.Context(), "SELECT entity_type,entity_id,payload FROM sync_entities WHERE account_id=$1 AND NOT deleted AND entity_type NOT IN ('memos','memoPages') AND $2 IN(SELECT sync_asset_references(payload))", id, hash)
 		if e != nil {
 			return e
 		}

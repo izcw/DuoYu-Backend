@@ -1,0 +1,10 @@
+{
+  "name": "duoyu-official-site",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.18.0",
+  "scripts": { "build": "vite build" },
+  "dependencies": { "vue": "3.5.44" },
+  "devDependencies": { "@vitejs/plugin-vue": "6.0.10", "vite": "8.3.4" }
+}

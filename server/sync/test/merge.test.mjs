@@ -1,6 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { merge } from '../src/store.mjs';
+import { merge, validateGraph, validateOperation } from '../src/store.mjs';
+import { randomUUID } from 'node:crypto';
+
+test('memo sync validates records, separates content from layout and keeps rich text consistent', () => {
+  const page = { id: 'ideas', name: '灵感', order: 0, icon: 'Notes' };
+  const base = {
+    id: 'note', title: '', body: 'word', html: '<b>word</b>', pageId: 'ideas', color: 'rose',
+    x: -20, y: 50, width: 264, height: 212, layer: 1, archivedAt: null,
+    archiveOrder: 0, createdAt: 1, updatedAt: 2,
+  };
+  const entities = [{ table: 'memoPages', id: page.id, payload: page }, { table: 'memos', id: base.id, payload: base }];
+  const create = entities.map(e => ({ table: e.table, id: e.id, base: null, value: e.payload, revision: '0' }));
+  validateOperation({ id: randomUUID(), deviceId: randomUUID(), changes: create });
+  validateGraph(entities);
+  assert.throws(() => validateGraph(entities.slice(1)), e => e.code === 'missing_page');
+  for (const invalid of [{ color: 'no' }, { archivedAt: false }, { width: 0 }, { body: 4 }, { updatedAt: 1e20 }])
+    assert.throws(() => validateGraph([entities[0], { ...entities[1], payload: { ...base, ...invalid } }]), e => e.code === 'invalid_memo');
+  const change = { table: 'memos', revision: '2', base, value: { ...base, body: 'new', html: '<b>new</b>' } };
+  const remote = { revision: '3', payload: { ...base, x: 75 } };
+  assert.deepEqual(merge(change, remote).payload, { ...change.value, x: 75 });
+  assert.throws(() => merge(change, { ...remote, payload: { ...base, html: '<u>word</u>' } }), e => e.code === 'field_conflict');
+});
 test('identical concurrent layouts are accepted', () => {
   const base = {
     id: 'a',
@@ -93,4 +114,15 @@ test('fixed settings require an explicit current-revision restore', () => {
     ).deleted,
     false,
   );
+});
+test('workspace undo requires matching deleted content and revision', () => {
+  for (const table of ['tabCollections', 'savedTabs']) {
+    const payload = { id: 'item', name: 'original' };
+    const remote = { revision: '5', payload, deleted: true };
+    const restore = { table, revision: '5', base: payload, value: payload, restore: true };
+    assert.deepEqual(merge(restore, remote), { deleted: false, payload });
+    assert.deepEqual(merge({ ...restore, restore: false }, remote), remote);
+    for (const change of [{ restore: false, base: null }, { revision: '4' }, { base: { ...payload, name: 'changed' } }])
+      assert.throws(() => merge({ ...restore, ...change }, remote), e => e.code === 'deleted_or_missing');
+  }
 });

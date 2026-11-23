@@ -96,6 +96,10 @@ func TestAdministratorAssetDeletionAndBackupCoordination(t *testing.T) {
 	admin := loginCookie(t, s, "trusted-super", "admin")
 	ordinary := loginCookie(t, s, "ordinary", "ordinary")
 	ref := "duoyu-asset:" + hash
+	memo, _ := json.Marshal(map[string]any{"id": "note", "body": ref})
+	if _, e := s.db.Exec(ctx, "INSERT INTO sync_entities VALUES($1,'memos','note',$2,false,1)", u.ID, memo); e != nil {
+		t.Fatal(e)
+	}
 	for _, key := range []string{"a", "b"} {
 		s.db.Exec(ctx, "INSERT INTO sync_entities VALUES($1,'libraryItems',$2,$3,false,1)", u.ID, key, json.RawMessage(`{"id":"`+key+`","icon":"duoyu-icon:{\"mode\":\"upload\",\"image\":\"`+ref+`\"}"}`))
 	}
@@ -118,6 +122,10 @@ func TestAdministratorAssetDeletionAndBackupCoordination(t *testing.T) {
 		t.Fatal(r.Body.String())
 	}
 	var changes []byte
+	var noteBody string
+	if e := s.db.QueryRow(ctx, "SELECT payload->>'body' FROM sync_entities WHERE account_id=$1 AND entity_type='memos' AND entity_id='note'", u.ID).Scan(&noteBody); e != nil || noteBody != ref {
+		t.Fatal("asset deletion changed literal memo text", noteBody, e)
+	}
 	s.db.QueryRow(ctx, "SELECT changes FROM sync_changes WHERE account_id=$1 ORDER BY revision DESC LIMIT 1", u.ID).Scan(&changes)
 	if strings.Contains(string(changes), ref) || !strings.Contains(string(changes), `"wallpaperMode"`) {
 		t.Fatal("references not detached atomically", string(changes))

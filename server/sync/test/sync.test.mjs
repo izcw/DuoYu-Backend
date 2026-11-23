@@ -8,8 +8,9 @@ import { createSyncServer } from "../src/http.mjs";
 const pool = new Pool({
   host: "127.0.0.1",
   port: 55432,
-  user: "duoyu",
-  password: "duoyu_dev_only",
+  // 测试账号由本机环境提供，数据库仍固定为本地专用测试库。
+  user: process.env.PGUSER,
+  password: process.env.PGPASSWORD,
   database: "duoyu_sync_test",
 });
 await pool.query(
@@ -196,9 +197,10 @@ await test("PostgreSQL sync transactions and API", async (t) => {
       await pool.query(
         `CREATE ROLE ${role} LOGIN PASSWORD '${password}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`,
       );
-      await pool.query(`GRANT USAGE ON SCHEMA public TO ${role}`);
+      const schema = (await pool.query("SELECT quote_ident(current_schema()) AS name")).rows[0].name;
+      await pool.query(`GRANT USAGE ON SCHEMA ${schema} TO ${role}`);
       await pool.query(
-        `GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO ${role}`,
+        `GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA ${schema} TO ${role}`,
       );
       const runtime = new Pool({
         host: "127.0.0.1",

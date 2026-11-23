@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f6f4fc">
+  <meta name="description" content="多鱼新标签页为 Chrome 和 Edge 提供多引擎搜索、可拖拽的收藏桌面、标签工作区和每日壁纸。在线体验桌面，下载多鱼扩展。">
+  <title>多鱼 DuoYu · 新标签页</title>
+  <link rel="icon" href="./favicon.ico">
+  <link rel="preload" as="image" href="./assets/landscape.webp">
+  <link rel="stylesheet" href="./assets/site.css">
+  <link rel="stylesheet" href="./assets/feature-art.css">
+  <script defer src="./assets/site.js"></script>
+</head>
+<body>
+<svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></symbol>
+<symbol id="i-play" viewBox="0 0 24 24"><path d="m9 5 10 7-10 7z"/></symbol>
+<symbol id="i-chrome" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.3"/><circle cx="12" cy="12" r="3.8"/><path d="m4 7 4.6 7.2M12 8.2h8.4M15.3 14l-4 7"/></symbol>
+<symbol id="i-edge" viewBox="0 0 24 24"><path d="M5.5 9.7C7 3 16.7 1.8 20.2 8.2c2.1 4.2.3 6.9-3.9 6.9-3.1 0-4.7-1.9-4.2-4.2-1.9 1.6-2.3 4.6.6 6.2 2.1 1.2 4.8 1.3 7.2.5-2.2 3.3-6.5 5.1-10.6 3.6C3.4 19 2 13.2 5.5 9.7Z"/><path d="M5.5 9.7c2-3.1 7.2-4.5 10.4-.9"/></symbol>
+<symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 2.2 6.8L21 12l-6.8 2.2L12 21l-2.2-6.8L3 12l6.8-2.2z"/></symbol>
+<symbol id="i-flower" viewBox="0 0 24 24"><path d="M12 2v20M2 12h20M5 5l14 14M5 19 19 5" stroke-width="3"/></symbol>
+<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.6"/><rect x="14" y="3" width="7" height="7" rx="1.6"/><rect x="3" y="14" width="7" height="7" rx="1.6"/><rect x="14" y="14" width="7" height="7" rx="1.6"/></symbol>
+<symbol id="i-open" viewBox="0 0 24 24"><path d="M14 3h7v7m0-7-8 8M10 5H6a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-4"/></symbol>
+<symbol id="i-expand" viewBox="0 0 24 24"><path d="M14.5 4H20v5.5M20 4l-6.5 6.5M9.5 20H4v-5.5M4 20l6.5-6.5"/></symbol>
+<symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="9" r="1.4"/><path d="m4 17 5-5 3 3 3.7-4 5.3 6"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="10" cy="10" r="6.5"/><path d="m15 15 5 5"/></symbol>
+<symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+<symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+<symbol id="i-close" viewBox="0 0 24 24"><path d="m5 5 14 14M19 5 5 19"/></symbol>
+<symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+<symbol id="i-tabs" viewBox="0 0 24 24"><rect x="7" y="7" width="14" height="14" rx="3"/><path d="M16 3H6a3 3 0 0 0-3 3v10M7 12h14"/></symbol>
+<symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+<symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18a5 5 0 1 1 0-10 6.4 6.4 0 0 1 12 .5A4.8 4.8 0 0 1 18 18Z"/></symbol>
+<symbol id="i-memo" viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9l-6 7H6a2 2 0 0 1-2-2zM14 21v-6h6M8 8h8M8 12h5"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol>
+<symbol id="i-mouse" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="6"/><path d="M12 6v4"/></symbol>
+<symbol id="i-desktop" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="13.5" rx="2"/><path d="M12 18v3m-5 0h10"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol></svg>
+<a class="skip" href="#overview">跳到主要内容</a>
+<header class="site-header">
+  <div class="wrap topbar">
+    <a href="#overview" class="brand" aria-label="多鱼 DuoYu 首页"><img src="./assets/duoyu.png" alt="" width="36" height="36"><span class="brand-type">多鱼 <b lang="en">DuoYu</b></span></a>
+    <nav class="nav-links" aria-label="主导航">
+      <a href="#overview" aria-current="location">产品概览</a><a href="#features">功能特色</a><a href="#guide">安装指南</a>
+    </nav>
+    <a class="button compact dark header-install" href="#guide"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>获取扩展</span></a>
+    <button class="menu-button icon-button" type="button" aria-label="展开导航" aria-controls="mobile-nav" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-menu"/></svg></button>
+  </div>
+  <nav id="mobile-nav" aria-label="移动导航" hidden><a href="#overview">产品概览</a><a href="#features">功能特色</a><a href="#guide">安装指南</a></nav>
+</header>
+<main>
+  <section id="overview" aria-labelledby="hero-title" class="hero">
+    <div class="wrap hero-grid">
+      <div class="hero-copy">
+        <a class="version-tag" href="#guide"><span aria-hidden="true" class="version-glyph">✦</span><span>v0.2.0</span><i></i>新版已发布</a>
+        <h1 id="hero-title">打开新标签，<br><strong>遇见新灵感。</strong></h1>
+        <p class="intro">把搜索、收藏和标签工作区放在一起。<br class="desktop-break">用你喜欢的方式，开启每一次浏览。</p>
+        <div class="hero-actions">
+          <a class="button primary" href="./downloads/DuoYu-0.2.0.zip" download><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>下载扩展</a>
+          <button class="button secondary" id="open-preview" type="button"><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>体验预览</button>
+        </div>
+        <p class="support-line"><svg class="icon" aria-hidden="true"><use href="#i-chrome"/></svg><svg class="icon" aria-hidden="true"><use href="#i-edge"/></svg><span>适用于 Chrome 和 Edge 浏览器</span></p>
+      </div>
+      <div class="hero-stage">
+        <i class="pixel-spark spark-a" aria-hidden="true"></i><i class="pixel-spark spark-b" aria-hidden="true"></i>
+        <div class="fish-sticker" aria-hidden="true"><img src="./assets/pixel-fish.png" alt="" width="75" height="46"><i></i><b></b></div>
+        <div id="preview-app"><div class="preview-placeholder"><img src="./assets/landscape.webp" alt="紫色山湖壁纸桌面预览"></div></div>
+      </div>
+    </div>
+  </section>
+  <section class="features wrap" id="features" aria-labelledby="feature-title">
+    <div class="section-intro"><div class="section-label"><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg>功能特色</div><h2 id="feature-title">一个起点，多种可能。</h2><p>从随手一搜到收好一整组标签，让浏览更顺手。</p></div>
+    <div class="feature-grid"><article class="feature-card search"><div class="dy-art dy-art--search" aria-hidden="true">
+    <div class="dy-art-search">
+      <div class="dy-art-search__field">
+        <svg viewBox="0 0 20 20" fill="none"><circle cx="8.5" cy="8.5" r="4.9" stroke="currentColor" stroke-width="1.7"/><path d="M12.2 12.2l4 4" stroke="currentColor" stroke-linecap="round" stroke-width="1.7"/></svg>
+        <span>搜索网页…</span><i></i>
+      </div>
+      <div class="dy-art-engines">
+        <b class="dy-art-engine dy-art-engine--bing"><svg viewBox="0 0 24 24" fill="none"><path d="M6 2.4 11.2 5v10.6l4.1-2.3-2.8-1.5-1.1-4.4 6.4 3.1c1.5.8 2.2 2.1 2.2 3.6 0 1.6-.8 2.9-2.5 3.8l-8.2 4.6L6 20.2z" fill="#008F94"/></svg></b>
+        <b class="dy-art-engine"><svg viewBox="0 0 24 24" fill="none"><path fill="#4285F4" d="M21.8 12.3c0-.7-.1-1.4-.2-2.1H12v4h5.5a4.7 4.7 0 0 1-2.1 3.1v2.6h3.4c2-1.8 3-4.4 3-7.6z"/><path fill="#34A853" d="M12 22c2.8 0 5.1-.9 6.8-2.5l-3.4-2.6c-.9.6-2.1 1-3.4 1-2.7 0-5-1.8-5.8-4.2H2.7v2.7A10.3 10.3 0 0 0 12 22z"/><path fill="#FBBC05" d="M6.2 13.7c-.3-1.1-.3-2.3 0-3.4V7.6H2.7a10.5 10.5 0 0 0 0 8.8z"/><path fill="#EA4335" d="M12 6.1c1.6 0 2.9.5 4 1.6l3-2.9A10 10 0 0 0 12 2a10.3 10.3 0 0 0-9.3 5.6l3.5 2.7A6.1 6.1 0 0 1 12 6.1z"/></svg></b>
+        <b class="dy-art-engine"><svg viewBox="0 0 24 24" fill="#4564E3"><ellipse cx="4.3" cy="10" rx="2.3" ry="3.3" transform="rotate(-16 4.3 10)"/><ellipse cx="9.1" cy="5.9" rx="2.3" ry="3.3"/><ellipse cx="15" cy="5.6" rx="2.2" ry="3.2" transform="rotate(13 15 5.6)"/><ellipse cx="20" cy="10" rx="2.1" ry="3.1" transform="rotate(23 20 10)"/><path d="M12 10.2c1.8 0 2.8 1.5 4.2 3.3 1.5 1.8 3.5 3.1 3.5 5.1 0 1.8-1.5 2.8-3.2 2.8-1.8 0-2.9-1-4.7-1-1.6 0-2.7 1-4.5 1-1.7 0-3.1-1.1-3.1-2.8 0-1.9 1.7-3.3 3.4-5.3 1.4-1.8 2.5-3.1 4.4-3.1z"/></svg></b>
+        <b class="dy-art-engine"><svg viewBox="0 0 24 24"><path fill="#30333A" d="M12 .9a11.1 11.1 0 0 0-3.5 21.6c.6.1.8-.2.8-.5v-2c-3.1.7-3.8-1.4-3.8-1.4-.5-1.3-1.2-1.6-1.2-1.6-1-.7.1-.7.1-.7 1.1.1 1.7 1.1 1.7 1.1 1 .1 1.2 2.1 3.3 1.4.1-.7.4-1.2.7-1.4-2.5-.3-5.1-1.2-5.1-5.5 0-1.2.4-2.2 1.1-3-.1-.3-.5-1.4.1-2.9 0 0 .9-.3 3.1 1.1a10.8 10.8 0 0 1 5.6 0c2.1-1.4 3-1.1 3-1.1.6 1.5.2 2.6.1 2.9.7.8 1.1 1.8 1.1 3 0 4.3-2.6 5.2-5.1 5.5.4.3.7 1 .7 2.1V22c0 .3.2.6.8.5A11.1 11.1 0 0 0 12 .9z"/></svg></b>
+      </div>
+    </div>
+  </div><div class="card-copy"><h3>多引擎搜索</h3><p>在 Bing、Google、百度等五种引擎间切换，输入关键词，即可开启下一次探索。</p></div></article>
+<article class="feature-card bookmarks"><div class="dy-art dy-art--bookmarks" aria-hidden="true">
+    <div class="dy-art-folder">
+      <i class="dy-art-folder__back"></i>
+      <i class="dy-art-folder__sheet dy-art-folder__sheet--rear"></i>
+      <i class="dy-art-folder__sheet dy-art-folder__sheet--front"></i>
+      <div class="dy-art-folder__cover">
+        <svg viewBox="0 0 22 22" fill="none"><path d="m11 2.9 2.5 5.3 5.8.8-4.2 4.1 1 5.8-5.1-2.8-5.1 2.8 1-5.8L2.7 9l5.8-.8L11 2.9Z" fill="#F5F5C8" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+        <i></i>
+      </div>
+    </div>
+  </div><div class="card-copy"><h3>收藏桌面</h3><p>把常用网站拖到桌面，用文件夹分门别类，让想去的地方始终触手可及。</p></div></article>
+<article class="feature-card tabs"><div class="dy-art dy-art--tabs" aria-hidden="true">
+    <div class="dy-art-windows">
+      <div class="dy-art-window dy-art-window--back"><i class="dy-art-window__bar"></i></div>
+      <div class="dy-art-window dy-art-window--middle"><i class="dy-art-window__bar"></i></div>
+      <div class="dy-art-window dy-art-window--front"><i class="dy-art-window__bar"></i><div class="dy-art-window__body"><b></b><span></span></div></div>
+    </div>
+  </div><div class="card-copy"><h3>标签工作区</h3><p>将一组标签页保存为集合。下次回来，一键恢复，从上次停下的地方继续。</p></div></article></div>
+    <div class="extras">
+      <div><svg class="icon" aria-hidden="true"><use href="#i-sun"/></svg><span><b>每日壁纸</b><small>每天打开，遇见不同风景</small></span></div>
+      <div><svg class="icon" aria-hidden="true"><use href="#i-memo"/></svg><span><b>灵感便签</b><small>随手记下转瞬即逝的想法</small></span></div>
+      <div><svg class="icon" aria-hidden="true"><use href="#i-cloud"/></svg><span><b>账号同步</b><small>用 DuoYu ID 同步收藏与集合</small></span></div>
+    </div>
+  </section>
+  <section class="guide" id="guide" aria-labelledby="guide-title">
+    <div class="wrap guide-grid">
+      <div class="guide-copy"><div class="section-label"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>安装指南</div><h2 id="guide-title">下一页，从多鱼开始。</h2><p>下载扩展包，在桌面浏览器中完成安装。<br>再打开一个新标签页，就能见到多鱼。</p><a class="button primary" href="./downloads/DuoYu-0.2.0.zip" download><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>下载扩展包</a><p class="release-meta">v0.2.0 <span>·</span> ZIP 格式 <span>·</span> 864 KB</p></div>
+      <div id="install-app"><ol><li>下载并解压扩展包。</li><li>在 Chrome 或 Edge 的扩展管理页开启开发者模式。</li><li>选择加载已解压的扩展程序，并选中包含 manifest.json 的目录。</li></ol></div>
+    </div>
+  </section>
+</main>
+<footer><div class="wrap footer-inner"><a class="brand" href="#overview"><img src="./assets/duoyu.png" alt="" width="36" height="36"><span class="brand-type">多鱼 <b lang="en">DuoYu</b></span></a><p>© 2026 多鱼新标签页</p><a href="#overview">返回顶部</a></div></footer>
+</body></html>

@@ -405,6 +405,12 @@ func TestUserSnapshotAndOfficialDefault(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	_, e = s.db.Exec(ctx, `INSERT INTO sync_entities(account_id,entity_type,entity_id,payload,revision) VALUES
+	  ($1,'memos','private-note','{"id":"private-note","body":"personal text"}',1),
+	  ($1,'memoPages','private-page','{"id":"private-page","name":"personal project"}',1)`, source.ID)
+	if e != nil {
+		t.Fatal(e)
+	}
 	r := callAdmin(s, admin, "POST", "templates/capture", fmt.Sprintf(`{"account_id":%q,"name":"官方桌面"}`, source.ID), true)
 	if r.Code != 200 {
 		t.Fatal(r.Body.String())
@@ -455,7 +461,7 @@ func TestUserSnapshotAndOfficialDefault(t *testing.T) {
 		t.Fatal(e)
 	}
 	s.db.QueryRow(ctx, "SELECT count(*) FROM sync_entities WHERE account_id=$1", source.ID).Scan(&count)
-	if count != 1 {
+	if count != 3 {
 		t.Fatal("existing user was overwritten")
 	}
 	r = callAdmin(s, admin, "DELETE", "catalog/templates/"+template+"?version=2", "", true)

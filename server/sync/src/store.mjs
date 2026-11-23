@@ -27,6 +27,8 @@ export const types = [
   "libraryPages",
   "libraryItems",
   "workspaceSpaces",
+  "memos",
+  "memoPages",
   "tabCollections",
   "savedTabs",
   "shortcuts",
@@ -55,6 +57,8 @@ const fields = {
     "updatedAt",
   ],
   workspaceSpaces: ["id", "name", "order", "icon"],
+  memoPages: ["id", "name", "icon", "order"],
+  memos: ["id", "title", "body", "html", "color", "pageId", "x", "y", "width", "height", "layer", "createdAt", "updatedAt", "archivedAt", "archiveOrder"],
   tabCollections: ["id", "spaceId", "name", "order", "updatedAt", "color"],
   savedTabs: [
     "id",
@@ -118,26 +122,20 @@ function validateOperationWithLimit(op, maxChanges) {
 }
 // Three-way merge, preserving the remote value on conflicting edits.
 export function merge(change, remote) {
-  if (
-    remote?.deleted &&
-    change.restore === true &&
-    ["preferences", "shortcuts"].includes(change.table) &&
-    change.revision === remote.revision &&
-    same(change.base, remote.payload)
-  )
-    return { payload: change.value, deleted: false };
-  if (same(change.base, change.value)) return remote;
   if (remote?.deleted) {
     if (change.value === null) return remote;
     if (
       change.restore === true &&
-      ["preferences", "shortcuts"].includes(change.table) &&
-      change.revision === remote.revision &&
-      same(change.base, remote.payload)
-    )
-      return { payload: change.value, deleted: false };
+      ["preferences", "shortcuts", "tabCollections", "savedTabs"].includes(change.table)
+    ) {
+      if (change.revision === remote.revision && same(change.base, remote.payload))
+        return { payload: change.value, deleted: false };
+    } else if (same(change.base, change.value)) {
+      return remote;
+    }
     throw new ApiError(409, "deleted_or_missing");
   }
+  if (same(change.base, change.value)) return remote;
   if (!remote) {
     if (change.revision !== "0" || change.base !== null)
       throw new ApiError(409, "deleted_or_missing");
@@ -164,6 +162,13 @@ export function merge(change, remote) {
       return {payload:{...current,value:result},deleted:false};
     }
     const wanted = { ...change.value };
+    // A formatted document and its searchable plain text are one edit.
+    if (change.table === "memos") {
+      const content = (row) => [row?.title, row?.body, row?.html];
+      if (!same(content(change.base), content(wanted)) &&
+          !same(content(change.base), content(current)) && !same(content(wanted), content(current)))
+        throw new ApiError(409, "field_conflict");
+    }
     let mergedIcon = false;
     if (
       !same(change.base?.icon, wanted.icon) &&
@@ -179,6 +184,7 @@ export function merge(change, remote) {
       (k) => k !== "updatedAt" && !same(change.base?.[k], change.value[k]),
     );
     const location = [
+      "x", "y",
       "pageId",
       "parent",
       "order",
@@ -255,6 +261,21 @@ export function validateGraph(rows) {
   );
   for (const r of rows.filter((r) => !r.deleted)) {
     const p = r.payload;
+    if (r.table === "memoPages" && (
+      ["wall", "archive"].includes(r.id) || typeof p.name !== "string" || !p.name.trim() ||
+      typeof p.icon !== "string" || !Number.isFinite(p.order)
+    )) throw new ApiError(400, "invalid_memo_page");
+    if (r.table === "memos") {
+      const validDate = (n) => Number.isFinite(n) && Number.isFinite(new Date(n).getTime());
+      if (typeof p.title !== "string" || typeof p.body !== "string" ||
+          (p.html !== undefined && typeof p.html !== "string") ||
+          !["sand", "rose", "sage", "sky", "lilac"].includes(p.color) ||
+          ![p.x, p.y, p.width, p.height, p.layer, p.archiveOrder].every(Number.isFinite) ||
+          p.width <= 0 || p.height <= 0 || !validDate(p.createdAt) || !validDate(p.updatedAt) ||
+          (p.archivedAt !== null && !validDate(p.archivedAt))) throw new ApiError(400, "invalid_memo");
+      if (p.pageId !== "wall" && !all.has("memoPages:" + p.pageId))
+        throw new ApiError(409, "missing_page");
+    }
     if (
       (typeof p.name === "string" && p.name.length > 200) ||
       (typeof p.text === "string" && p.text.length > 200000)
@@ -450,7 +471,7 @@ export async function applyOperation(pool, account, op, backup) {
       const assetRefs = (
         await db.query(
           "SELECT DISTINCT sync_asset_references($1::jsonb) AS sha",
-          [JSON.stringify(updates.filter((u) => !u.deleted))],
+          [JSON.stringify(updates.filter((u) => !u.deleted && u.table !== "memos" && u.table !== "memoPages"))],
         )
       ).rows;
       for (const { sha } of assetRefs)

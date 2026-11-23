@@ -75,7 +75,7 @@ func (s *Server) captureTemplate(w http.ResponseWriter, r *http.Request) error {
 		if _, e := tx.Exec(r.Context(), "SELECT id FROM sync_accounts WHERE id=$1 FOR UPDATE", in.Account); e != nil {
 			return e
 		}
-		rows, e := tx.Query(r.Context(), "SELECT entity_type,entity_id,payload FROM sync_entities WHERE account_id=$1 AND NOT deleted ORDER BY entity_type,entity_id", in.Account)
+		rows, e := tx.Query(r.Context(), "SELECT entity_type,entity_id,payload FROM sync_entities WHERE account_id=$1 AND NOT deleted AND entity_type NOT IN ('memos','memoPages') ORDER BY entity_type,entity_id", in.Account)
 		if e != nil {
 			return e
 		}

@@ -50,6 +50,7 @@ BEGIN
   END IF;
   FOR hit IN SELECT regexp_matches(t,'duoyu-asset:([a-f0-9]{64})','g') LOOP RETURN NEXT hit[1]; END LOOP;
  ELSIF jsonb_typeof(v)='object' THEN
+  IF v->>'table' IN ('memos','memoPages') AND (v ? 'changes' OR v ? 'payload' OR v ? 'base') THEN RETURN; END IF;
   FOR child IN SELECT value FROM jsonb_each(v) LOOP RETURN QUERY SELECT sync_asset_references(child); END LOOP;
  ELSIF jsonb_typeof(v)='array' THEN
   FOR child IN SELECT value FROM jsonb_array_elements(v) LOOP RETURN QUERY SELECT sync_asset_references(child); END LOOP;
@@ -60,7 +61,7 @@ DECLARE refs text[]; removed integer;
 BEGIN
  PERFORM id FROM sync_accounts WHERE id=owner_id FOR UPDATE;
  SELECT coalesce(array_agg(DISTINCT h),'{}'::text[]) INTO refs FROM (
-  SELECT sync_asset_references(payload) h FROM sync_entities WHERE account_id=owner_id AND NOT deleted
+  SELECT sync_asset_references(payload) h FROM sync_entities WHERE account_id=owner_id AND NOT deleted AND entity_type NOT IN ('memos','memoPages')
   UNION SELECT sync_asset_references(detail) h FROM sync_conflicts WHERE account_id=owner_id AND resolved_at IS NULL
  ) r;
  UPDATE sync_assets SET referenced_at=now() WHERE account_id=owner_id AND sha256=ANY(refs);
@@ -97,7 +98,7 @@ BEGIN
  SELECT epoch INTO generation FROM sync_generation WHERE singleton;
  SELECT coalesce(jsonb_agg(jsonb_build_object('table',entity_type,'id',entity_id,'payload',payload,'deleted',deleted,'revision',revision::text) ORDER BY entity_type,entity_id),'[]'::jsonb) INTO entities FROM sync_entities WHERE account_id=owner_id;
  SELECT coalesce(jsonb_object_agg(sha256,jsonb_build_object('media_type',media_type,'bytes',coalesce((to_jsonb(a)->>'byte_size')::bigint,octet_length(body),0),'body',CASE WHEN body IS NOT NULL THEN encode(body,'base64') ELSE NULL END)),'{}'::jsonb) INTO assets FROM sync_assets a
- WHERE account_id=owner_id AND sha256 IN(SELECT sync_asset_references(payload) FROM sync_entities WHERE account_id=owner_id AND NOT deleted);
+ WHERE account_id=owner_id AND sha256 IN(SELECT sync_asset_references(payload) FROM sync_entities WHERE account_id=owner_id AND NOT deleted AND entity_type NOT IN ('memos','memoPages'));
  INSERT INTO sync_user_backups(account_id,epoch,revision,snapshot) VALUES(owner_id,generation,rev,jsonb_build_object('format','duoyu-user-snapshot','version',1,'account_id',owner_id,'epoch',generation,'revision',rev::text,'entities',entities,'assets',assets)) ON CONFLICT DO NOTHING;
  DELETE FROM sync_user_backups WHERE account_id=owner_id AND id NOT IN(SELECT id FROM sync_user_backups WHERE account_id=owner_id ORDER BY created_at DESC,id DESC LIMIT 5);
 END $$;

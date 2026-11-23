@@ -141,6 +141,19 @@ export function createSyncServer({ pool, authenticate, origins, clock = Date.now
           "SELECT id::text,revision::text,epoch::text,created_at,jsonb_array_length(snapshot->'entities') AS entity_count FROM sync_user_backups WHERE account_id=$1 ORDER BY created_at DESC,id DESC LIMIT 5", [account.id]);
         return send(200, { backups: result.rows });
       }
+      if (req.method === 'POST' && url.pathname === '/api/v1/sync/backups') {
+        const backup = await scopedTransaction(pool, account.id, async db => {
+          const { rows: [head] } = await db.query(
+            'INSERT INTO sync_accounts(id,issuer,subject,head_revision) VALUES($1,$2,$3,1) ON CONFLICT(id) DO UPDATE SET head_revision=sync_accounts.head_revision+1 RETURNING head_revision::text AS revision',
+            [account.id, account.issuer, account.sub]);
+          // The same atomic trigger and retention policy as a normal cloud edit.
+          await db.query("INSERT INTO sync_changes(account_id,revision,operation_id,changes) VALUES($1,$2,gen_random_uuid(),'[]')",
+            [account.id, head.revision]);
+          return (await db.query('SELECT id::text,revision::text FROM sync_user_backups WHERE account_id=$1 AND revision=$2 AND epoch=(SELECT epoch FROM sync_generation WHERE singleton)',
+            [account.id, head.revision])).rows[0];
+        });
+        return send(201, backup);
+      }
       const restore = /^\/api\/v1\/sync\/backups\/([0-9a-f-]{36})\/restore$/.exec(url.pathname);
       if (req.method === 'POST' && restore) {
         if (!req.headers['content-type']?.startsWith('application/json')) throw new ApiError(415, 'json_required');
@@ -356,11 +369,14 @@ export function createSyncServer({ pool, authenticate, origins, clock = Date.now
 }
 
 async function scopedQuery(pool, id, sql, values) {
+  return scopedTransaction(pool, id, db => db.query(sql, values));
+}
+async function scopedTransaction(pool, id, action) {
   const db = await pool.connect();
   try {
     await db.query('BEGIN');
     await db.query("SELECT set_config('app.account_id',$1,true)", [id]);
-    const result = await db.query(sql, values);
+    const result = await action(db);
     await db.query('COMMIT');
     return result;
   } catch (e) {
